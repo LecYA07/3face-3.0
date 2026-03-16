@@ -395,15 +395,15 @@ async def show_ban_menu(callback: CallbackQuery):
         return
     
     await callback.message.edit_text(
-        f"{EMOJI['lock']} *УПРАВЛЕНИЕ БАНАМИ*\n"
+        f"{EMOJI['lock']} <b>УПРАВЛЕНИЕ БАНАМИ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"Используйте команды:\n\n"
-        f"`/ban @username` - забанить игрока\n"
-        f"`/unban @username` - разбанить игрока\n\n"
+        f"<code>/ban @username</code> - забанить игрока\n"
+        f"<code>/unban @username</code> - разбанить игрока\n\n"
         f"Или укажите user_id:\n"
-        f"`/ban 123456789`",
+        f"<code>/ban 123456789</code>",
         reply_markup=get_admin_menu_keyboard(),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     await callback.answer()
 
