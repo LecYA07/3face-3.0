@@ -22,25 +22,24 @@ MIN_RATING = 0  # Минимальный рейтинг
 
 # Matchmaking Settings
 MAX_RATING_DIFF = 300  # Максимальная разница рейтинга для быстрого подбора
-RATING_DIFF_EXPAND_TIME = 30  # Через сколько секунд расширять диапазон
-RATING_DIFF_EXPAND_STEP = 100  # На сколько расширять диапазон
+RATING_DIFF_EXPAND_TIME = 20  # Через сколько секунд расширять диапазон
+RATING_DIFF_EXPAND_STEP = 300  # На сколько расширять диапазон
 
 # Ready Check Settings
 READY_CHECK_TIMEOUT = 60  # Секунд на подтверждение готовности
 
 # Maps
 MAPS = [
-    "🏜️ Dust 2",
-    "🏢 Mirage", 
-    "🌊 Inferno",
-    "🏭 Nuke",
-    "🌲 Ancient",
-    "🏔️ Vertigo",
-    "🌴 Anubis"
+    "🏜️ Sandstone",
+    "🏢 Hanami", 
+    "🌊 Breeze",
+    "🏭 Zone7",
+    "🏔️ Rust",
+    "🌴 Dune"
 ]
 
 # Sides
-SIDES = ["🔴 Террористы (T)", "🔵 Контр-террористы (CT)"]
+SIDES = ["🔴 Атака (T)", "🔵 Защита (CT)"]
 
 # Platform types
 PLATFORMS = {
