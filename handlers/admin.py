@@ -820,8 +820,9 @@ async def backup_database(message: Message):
 # ============ UPDATE COMMAND ============
 
 # URL для скачивания архива с GitHub
-GITHUB_REPO = "LecYA07/3face-3.0"
-GITHUB_BRANCH = "main"
+# Формат: username/repository
+GITHUB_REPO = os.getenv("GITHUB_REPO", "LecYA07/3face-3.0")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "master")
 
 # Файлы и папки которые нужно сохранить при обновлении
 PRESERVE_FILES = [".env", "database.db", "backups"]
@@ -1028,30 +1029,42 @@ async def version_command(message: Message):
     import aiohttp
     
     try:
-        # Получаем информацию о последнем коммите с GitHub API
-        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
+        # Получаем информацию о последних коммитах с GitHub API
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits?sha={GITHUB_BRANCH}&per_page=1"
+        
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "3face-bot"
+        }
         
         async with aiohttp.ClientSession() as session:
-            async with session.get(api_url) as response:
+            async with session.get(api_url, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    commit_sha = data['sha'][:7]
-                    commit_msg = data['commit']['message'].split('\n')[0][:50]
-                    commit_date = data['commit']['committer']['date'][:10]
-                    author = data['commit']['author']['name']
-                    
-                    await message.answer(
-                        f"{EMOJI['info']} *Информация о репозитории*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"📦 Репозиторий: {GITHUB_REPO}\n"
-                        f"🌿 Ветка: {GITHUB_BRANCH}\n\n"
-                        f"📝 *Последний коммит:*\n"
-                        f"  • SHA: `{commit_sha}`\n"
-                        f"  • Дата: {commit_date}\n"
-                        f"  • Автор: {author}\n"
-                        f"  • Сообщение: {commit_msg}",
-                        parse_mode="Markdown"
-                    )
+                    if data and len(data) > 0:
+                        commit = data[0]
+                        commit_sha = commit['sha'][:7]
+                        commit_msg = commit['commit']['message'].split('\n')[0][:50]
+                        commit_date = commit['commit']['committer']['date'][:10]
+                        author = commit['commit']['author']['name']
+                        
+                        await message.answer(
+                            f"{EMOJI['info']} *Информация о репозитории*\n"
+                            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"📦 Репозиторий: {GITHUB_REPO}\n"
+                            f"🌿 Ветка: {GITHUB_BRANCH}\n\n"
+                            f"📝 *Последний коммит:*\n"
+                            f"  • SHA: `{commit_sha}`\n"
+                            f"  • Дата: {commit_date}\n"
+                            f"  • Автор: {author}\n"
+                            f"  • Сообщение: {commit_msg}",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await message.answer(
+                            f"{EMOJI['warning']} Коммиты не найдены.",
+                            parse_mode="Markdown"
+                        )
                 else:
                     await message.answer(
                         f"{EMOJI['warning']} Не удалось получить информацию о версии.\n"
