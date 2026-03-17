@@ -68,6 +68,7 @@ async def init_db():
                 lobby_id INTEGER,
                 user_id INTEGER,
                 party_id INTEGER DEFAULT NULL,
+                lobby_message_id INTEGER DEFAULT NULL,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (lobby_id) REFERENCES lobbies(lobby_id),
                 FOREIGN KEY (user_id) REFERENCES users(user_id)
@@ -261,6 +262,12 @@ async def init_db():
         # Миграция: добавляем столбец lobby_id в matchmaking_queue если его нет
         try:
             await db.execute("ALTER TABLE matchmaking_queue ADD COLUMN lobby_id INTEGER DEFAULT NULL")
+        except Exception:
+            pass  # Столбец уже существует
+        
+        # Миграция: добавляем столбец lobby_message_id в lobby_players если его нет
+        try:
+            await db.execute("ALTER TABLE lobby_players ADD COLUMN lobby_message_id INTEGER DEFAULT NULL")
         except Exception:
             pass  # Столбец уже существует
 
@@ -827,6 +834,44 @@ async def restore_lobby_after_match(lobby_id: int) -> None:
             (lobby_id,)
         )
         await db.commit()
+
+
+async def update_lobby_player_message(lobby_id: int, user_id: int, message_id: int) -> None:
+    """Обновить ID сообщения лобби для игрока"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE lobby_players SET lobby_message_id = ? WHERE lobby_id = ? AND user_id = ?",
+            (message_id, lobby_id, user_id)
+        )
+        await db.commit()
+
+
+async def get_lobby_player_message(lobby_id: int, user_id: int) -> Optional[int]:
+    """Получить ID сообщения лобби для игрока"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute(
+            "SELECT lobby_message_id FROM lobby_players WHERE lobby_id = ? AND user_id = ?",
+            (lobby_id, user_id)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+
+async def get_lobby_players_with_messages(lobby_id: int) -> List[Dict[str, Any]]:
+    """Получить игроков в лобби с их message_id"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT lp.*, u.username, u.full_name, u.rating, u.platform,
+                   u.game_nickname, u.game_id, u.wins, u.losses
+            FROM lobby_players lp
+            JOIN users u ON lp.user_id = u.user_id
+            WHERE lp.lobby_id = ?
+            ORDER BY lp.joined_at
+        """
+        async with db.execute(query, (lobby_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 # ============ PARTY FUNCTIONS ============

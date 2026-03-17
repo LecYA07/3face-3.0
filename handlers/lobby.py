@@ -213,12 +213,33 @@ async def _create_lobby(callback: CallbackQuery, platform: str, game_format: str
     user = await db.get_user(user_id)
     creator_name = format_player_name(user)
     
-    await callback.message.edit_text(
+    # Редактируем сообщение и сохраняем его ID
+    msg = await callback.message.edit_text(
         f"{EMOJI['check']} *Лобби создано!*\n\n" +
         format_lobby_info(lobby, players, creator_name),
         reply_markup=get_lobby_keyboard(lobby_id, is_creator=True, is_full=len(players) >= lobby_size),
         parse_mode="Markdown"
     )
+    
+    # Сохраняем message_id для создателя
+    await db.update_lobby_player_message(lobby_id, user_id, callback.message.message_id)
+    
+    # Если в пати, отправляем сообщения остальным участникам пати и сохраняем их message_id
+    if party_id:
+        for member in party_members:
+            if member['user_id'] != user_id:
+                try:
+                    member_msg = await callback.bot.send_message(
+                        member['user_id'],
+                        f"{EMOJI['check']} *Вы добавлены в лобби!*\n\n" +
+                        format_lobby_info(lobby, players, creator_name),
+                        reply_markup=get_lobby_keyboard(lobby_id, is_creator=False, is_full=len(players) >= lobby_size),
+                        parse_mode="Markdown"
+                    )
+                    await db.update_lobby_player_message(lobby_id, member['user_id'], member_msg.message_id)
+                except Exception as e:
+                    logger.warning(f"Failed to notify party member {member['user_id']}: {e}")
+    
     await callback.answer("Лобби успешно создано!")
 
 
@@ -321,16 +342,37 @@ async def join_lobby(callback: CallbackQuery):
     is_creator = lobby['creator_id'] == user_id
     is_full = len(players) >= lobby_size
     
-    # Отвечаем присоединившемуся игроку
+    # Отвечаем присоединившемуся игроку и сохраняем message_id
     await callback.message.edit_text(
         f"{EMOJI['check']} *Вы присоединились к лобби!*\n\n" +
         format_lobby_info(lobby, players, creator_name),
         reply_markup=get_lobby_keyboard(lobby_id, is_creator, is_full),
         parse_mode="Markdown"
     )
+    
+    # Сохраняем message_id для присоединившегося игрока
+    await db.update_lobby_player_message(lobby_id, user_id, callback.message.message_id)
+    
+    # Если в пати, отправляем сообщения остальным участникам пати и сохраняем их message_id
+    if party_id:
+        party_members = await db.get_party_members(party_id)
+        for member in party_members:
+            if member['user_id'] != user_id and member['user_id'] in new_joined_ids:
+                try:
+                    member_msg = await callback.bot.send_message(
+                        member['user_id'],
+                        f"{EMOJI['check']} *Вы добавлены в лобби!*\n\n" +
+                        format_lobby_info(lobby, players, creator_name),
+                        reply_markup=get_lobby_keyboard(lobby_id, is_creator=False, is_full=is_full),
+                        parse_mode="Markdown"
+                    )
+                    await db.update_lobby_player_message(lobby_id, member['user_id'], member_msg.message_id)
+                except Exception as e:
+                    logger.warning(f"Failed to notify party member {member['user_id']}: {e}")
+    
     await callback.answer("Успешно!")
     
-    # Уведомляем всех существующих участников лобби об обновлении
+    # Уведомляем всех существующих участников лобби об обновлении (редактируем их сообщения)
     await notify_lobby_players_update(
         callback.bot, 
         lobby_id, 
@@ -348,13 +390,47 @@ async def leave_lobby(callback: CallbackQuery):
     lobby_id = int(callback.data.split(":")[2])
     user_id = callback.from_user.id
     
+    # Получаем информацию о покидающем игроке для уведомления
+    leaving_user = await db.get_user(user_id)
+    leaving_user_name = format_player_name(leaving_user) if leaving_user else "Игрок"
+    
+    # Покидаем лобби
     await db.leave_lobby(lobby_id, user_id)
     
+    # Обновляем сообщение у покинувшего игрока
     await callback.message.edit_text(
         f"{EMOJI['check']} Вы покинули лобби.",
         parse_mode="Markdown"
     )
     await callback.answer("Вы вышли из лобби")
+    
+    # Получаем обновлённую информацию о лобби
+    lobby = await db.get_lobby(lobby_id)
+    if not lobby:
+        return  # Лобби было удалено
+    
+    players = await db.get_lobby_players(lobby_id)
+    
+    # Если в лобби никого не осталось, удаляем его
+    if not players:
+        await db.delete_lobby(lobby_id)
+        return
+    
+    creator = await db.get_user(lobby['creator_id'])
+    creator_name = format_player_name(creator) if creator else "Неизвестно"
+    
+    # Уведомляем оставшихся игроков (обновляем их сообщения)
+    action_text = f"{EMOJI['cross']} *{leaving_user_name}* покинул лобби"
+    
+    await update_lobby_message_for_all_players(
+        bot=callback.bot,
+        lobby_id=lobby_id,
+        lobby=lobby,
+        players=players,
+        creator_name=creator_name,
+        exclude_user_id=user_id,  # Не обновляем сообщение у покинувшего (его уже отредактировали)
+        action_text=action_text
+    )
 
 
 @router.callback_query(F.data.startswith("lobby:disband:"))
@@ -372,13 +448,52 @@ async def disband_lobby(callback: CallbackQuery):
         await callback.answer("Только создатель может расформировать лобби!", show_alert=True)
         return
     
+    # Получаем игроков до удаления лобби
+    players = await db.get_lobby_players_with_messages(lobby_id)
+    
+    # Удаляем лобби
     await db.delete_lobby(lobby_id)
     
+    # Обновляем сообщение у создателя
     await callback.message.edit_text(
         f"{EMOJI['check']} Лобби расформировано.",
         parse_mode="Markdown"
     )
     await callback.answer("Лобби удалено")
+    
+    # Уведомляем остальных участников о расформировании лобби
+    for player in players:
+        if player['user_id'] != user_id:
+            message_id = player.get('lobby_message_id')
+            try:
+                if message_id:
+                    # Пытаемся отредактировать сообщение
+                    try:
+                        await callback.bot.edit_message_text(
+                            chat_id=player['user_id'],
+                            message_id=message_id,
+                            text=f"{EMOJI['cross']} *Лобби #{lobby_id} расформировано*\n\n"
+                                 f"Создатель лобби удалил его.",
+                            parse_mode="Markdown"
+                        )
+                    except Exception:
+                        # Если не удалось отредактировать, отправляем новое сообщение
+                        await callback.bot.send_message(
+                            player['user_id'],
+                            f"{EMOJI['cross']} *Лобби #{lobby_id} расформировано*\n\n"
+                            f"Создатель лобби удалил его.",
+                            parse_mode="Markdown"
+                        )
+                else:
+                    # Отправляем новое сообщение
+                    await callback.bot.send_message(
+                        player['user_id'],
+                        f"{EMOJI['cross']} *Лобби #{lobby_id} расформировано*\n\n"
+                        f"Создатель лобби удалил его.",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to notify player {player['user_id']} about lobby disband: {e}")
 
 
 @router.callback_query(F.data.startswith("lobby:invite:"))
@@ -718,6 +833,90 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
     logger.info(f"Match {match_id} ({game_format}) created from lobby {lobby_id} with ready check")
 
 
+async def update_lobby_message_for_all_players(
+    bot: Bot,
+    lobby_id: int,
+    lobby: Dict[str, Any],
+    players: List[Dict[str, Any]],
+    creator_name: str,
+    exclude_user_id: int = None,
+    action_text: str = None
+) -> None:
+    """
+    Обновить сообщение о лобби у всех игроков.
+    Редактирует существующие сообщения вместо отправки новых.
+    
+    Args:
+        bot: Экземпляр бота
+        lobby_id: ID лобби
+        lobby: Данные лобби
+        players: Актуальный список игроков в лобби
+        creator_name: Имя создателя лобби
+        exclude_user_id: ID игрока, которому не нужно обновлять сообщение (например, тот кто только что присоединился)
+        action_text: Текст действия для отображения (например, "Игрок присоединился")
+    """
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    
+    is_full = len(players) >= lobby_size
+    
+    # Получаем игроков с их message_id
+    players_with_messages = await db.get_lobby_players_with_messages(lobby_id)
+    
+    for player_data in players_with_messages:
+        player_id = player_data['user_id']
+        message_id = player_data.get('lobby_message_id')
+        
+        # Пропускаем указанного игрока
+        if exclude_user_id and player_id == exclude_user_id:
+            continue
+        
+        is_creator = lobby['creator_id'] == player_id
+        
+        # Формируем текст сообщения
+        if action_text:
+            lobby_text = f"{action_text}\n\n" + format_lobby_info(lobby, players, creator_name)
+        else:
+            lobby_text = format_lobby_info(lobby, players, creator_name)
+        
+        try:
+            if message_id:
+                # Пытаемся отредактировать существующее сообщение
+                try:
+                    await bot.edit_message_text(
+                        chat_id=player_id,
+                        message_id=message_id,
+                        text=lobby_text,
+                        reply_markup=get_lobby_keyboard(lobby_id, is_creator, is_full),
+                        parse_mode="Markdown"
+                    )
+                except Exception as edit_error:
+                    # Если не удалось отредактировать (сообщение удалено или слишком старое),
+                    # отправляем новое сообщение
+                    logger.debug(f"Could not edit message for {player_id}: {edit_error}")
+                    msg = await bot.send_message(
+                        player_id,
+                        lobby_text,
+                        reply_markup=get_lobby_keyboard(lobby_id, is_creator, is_full),
+                        parse_mode="Markdown"
+                    )
+                    # Сохраняем новый message_id
+                    await db.update_lobby_player_message(lobby_id, player_id, msg.message_id)
+            else:
+                # Если message_id нет, отправляем новое сообщение
+                msg = await bot.send_message(
+                    player_id,
+                    lobby_text,
+                    reply_markup=get_lobby_keyboard(lobby_id, is_creator, is_full),
+                    parse_mode="Markdown"
+                )
+                # Сохраняем message_id
+                await db.update_lobby_player_message(lobby_id, player_id, msg.message_id)
+        except Exception as e:
+            logger.warning(f"Failed to update lobby message for player {player_id}: {e}")
+
+
 async def notify_lobby_players_update(
     bot: Bot,
     lobby_id: int,
@@ -729,7 +928,7 @@ async def notify_lobby_players_update(
 ) -> None:
     """
     Уведомить существующих участников лобби о присоединении новых игроков.
-    Отправляет обновлённое сообщение со списком участников.
+    Редактирует существующие сообщения вместо отправки новых.
     
     Args:
         bot: Экземпляр бота
@@ -743,12 +942,6 @@ async def notify_lobby_players_update(
     if not existing_player_ids:
         return
     
-    game_format = lobby.get('game_format', '5x5')
-    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
-    lobby_size = format_data['lobby_size']
-    
-    is_full = len(players) >= lobby_size
-    
     # Получаем имена новых игроков для уведомления
     new_players_names = []
     for player in players:
@@ -756,24 +949,16 @@ async def notify_lobby_players_update(
             new_players_names.append(format_player_name(player))
     
     new_players_text = ", ".join(new_players_names) if new_players_names else "Новый игрок"
+    action_text = f"{EMOJI['check']} *{new_players_text}* присоединился к лобби!"
     
-    # Отправляем уведомление каждому существующему участнику
-    for player_id in existing_player_ids:
-        try:
-            is_creator = lobby['creator_id'] == player_id
-            
-            # Формируем текст уведомления
-            notification_text = (
-                f"{EMOJI['users']} *Обновление лобби!*\n\n"
-                f"{EMOJI['check']} {new_players_text} присоединился к лобби!\n\n"
-                + format_lobby_info(lobby, players, creator_name)
-            )
-            
-            await bot.send_message(
-                player_id,
-                notification_text,
-                reply_markup=get_lobby_keyboard(lobby_id, is_creator, is_full),
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to notify player {player_id} about lobby update: {e}")
+    # Обновляем сообщения у всех игроков, кроме новых присоединившихся
+    # (у них уже будет актуальное сообщение)
+    await update_lobby_message_for_all_players(
+        bot=bot,
+        lobby_id=lobby_id,
+        lobby=lobby,
+        players=players,
+        creator_name=creator_name,
+        exclude_user_id=None,  # Обновляем у всех существующих
+        action_text=action_text
+    )
