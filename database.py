@@ -186,6 +186,21 @@ async def init_db():
             )
         """)
         
+        # Таблица сообщений в тикетах
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ticket_messages (
+                message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER,
+                user_id INTEGER,
+                message TEXT,
+                is_admin INTEGER DEFAULT 0,
+                photo_file_id TEXT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (ticket_id) REFERENCES tickets(ticket_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        """)
+        
         # Миграция: добавляем столбец photo_file_id если его нет
         try:
             await db.execute("ALTER TABLE tickets ADD COLUMN photo_file_id TEXT DEFAULT NULL")
@@ -1219,14 +1234,22 @@ async def get_user_pending_match(user_id: int) -> Optional[Dict[str, Any]]:
 
 async def is_user_in_active_or_pending_match(user_id: int) -> bool:
     """Проверить, участвует ли пользователь в активном или pending матче"""
+    from config import READY_CHECK_TIMEOUT
+    
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Проверяем только матчи, которые не просрочены
+        # Pending матчи старше READY_CHECK_TIMEOUT + 60 секунд считаются зависшими
         query = """
             SELECT 1 FROM matches m
             JOIN match_players mp ON m.match_id = mp.match_id
-            WHERE mp.user_id = ? AND m.status IN ('active', 'pending')
+            WHERE mp.user_id = ? AND (
+                m.status = 'active' 
+                OR (m.status = 'pending' AND datetime(m.created_at, '+' || ? || ' seconds') > datetime('now'))
+            )
             LIMIT 1
         """
-        async with db.execute(query, (user_id,)) as cursor:
+        timeout_with_buffer = READY_CHECK_TIMEOUT + 60  # Добавляем буфер на случай задержек
+        async with db.execute(query, (user_id, timeout_with_buffer)) as cursor:
             return await cursor.fetchone() is not None
 
 
@@ -1315,7 +1338,7 @@ async def get_user_tickets(user_id: int, limit: int = 10) -> List[Dict[str, Any]
 
 
 async def respond_to_ticket(ticket_id: int, admin_response: str, responded_by: int) -> None:
-    """Ответить на тикет"""
+    """Ответить на тикет (устаревший метод для совместимости)"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("""
             UPDATE tickets SET 
@@ -1324,6 +1347,78 @@ async def respond_to_ticket(ticket_id: int, admin_response: str, responded_by: i
                 status = 'answered'
             WHERE ticket_id = ?
         """, (admin_response, responded_by, ticket_id))
+        await db.commit()
+    
+    # Также добавляем в историю сообщений
+    await add_ticket_message(ticket_id, responded_by, admin_response, is_admin=True)
+
+
+async def add_ticket_message(ticket_id: int, user_id: int, message: str, is_admin: bool = False, photo_file_id: str = None) -> int:
+    """Добавить сообщение в тикет"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO ticket_messages (ticket_id, user_id, message, is_admin, photo_file_id)
+            VALUES (?, ?, ?, ?, ?)
+        """, (ticket_id, user_id, message, 1 if is_admin else 0, photo_file_id))
+        message_id = cursor.lastrowid
+        await db.commit()
+        return message_id
+
+
+async def get_ticket_messages(ticket_id: int) -> List[Dict[str, Any]]:
+    """Получить все сообщения тикета"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT tm.*, u.username, u.full_name, u.game_nickname
+            FROM ticket_messages tm
+            JOIN users u ON tm.user_id = u.user_id
+            WHERE tm.ticket_id = ?
+            ORDER BY tm.created_at ASC
+        """
+        async with db.execute(query, (ticket_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_all_tickets(status: str = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Получить все тикеты (для модераторов)"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if status:
+            query = """
+                SELECT t.*, u.username, u.full_name, u.game_nickname,
+                       r.username as responder_username, r.full_name as responder_name
+                FROM tickets t
+                JOIN users u ON t.user_id = u.user_id
+                LEFT JOIN users r ON t.responded_by = r.user_id
+                WHERE t.status = ?
+                ORDER BY t.created_at DESC
+                LIMIT ?
+            """
+            async with db.execute(query, (status, limit)) as cursor:
+                rows = await cursor.fetchall()
+        else:
+            query = """
+                SELECT t.*, u.username, u.full_name, u.game_nickname,
+                       r.username as responder_username, r.full_name as responder_name
+                FROM tickets t
+                JOIN users u ON t.user_id = u.user_id
+                LEFT JOIN users r ON t.responded_by = r.user_id
+                ORDER BY t.created_at DESC
+                LIMIT ?
+            """
+            async with db.execute(query, (limit,)) as cursor:
+                rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def reopen_ticket(ticket_id: int) -> None:
+    """Переоткрыть тикет (сменить статус на open)"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            UPDATE tickets SET status = 'open' WHERE ticket_id = ?
+        """, (ticket_id,))
         await db.commit()
 
 

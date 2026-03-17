@@ -580,8 +580,108 @@ def get_ticket_admin_keyboard(ticket_id: int, has_photo: bool = False) -> Inline
     )
     builder.row(
         InlineKeyboardButton(
+            text="📜 История сообщений",
+            callback_data=f"ticket:history:{ticket_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
             text=f"{EMOJI['check']} Закрыть тикет",
             callback_data=f"ticket:close:{ticket_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_tickets_list_keyboard(filter_status: str = None) -> InlineKeyboardMarkup:
+    """Клавиатура для списка тикетов (для модераторов)"""
+    builder = InlineKeyboardBuilder()
+    
+    # Кнопки фильтрации
+    builder.row(
+        InlineKeyboardButton(
+            text="📂 Все" + (" ✓" if filter_status is None else ""),
+            callback_data="tickets:filter:all"
+        ),
+        InlineKeyboardButton(
+            text="🟢 Открытые" + (" ✓" if filter_status == "open" else ""),
+            callback_data="tickets:filter:open"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="💬 Отвеченные" + (" ✓" if filter_status == "answered" else ""),
+            callback_data="tickets:filter:answered"
+        ),
+        InlineKeyboardButton(
+            text="🔒 Закрытые" + (" ✓" if filter_status == "closed" else ""),
+            callback_data="tickets:filter:closed"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_ticket_detail_keyboard(ticket_id: int, ticket_status: str, has_photo: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура для деталей тикета"""
+    builder = InlineKeyboardBuilder()
+    
+    if has_photo:
+        builder.row(
+            InlineKeyboardButton(
+                text="📷 Посмотреть фото",
+                callback_data=f"ticket:photo:{ticket_id}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="📜 История сообщений",
+            callback_data=f"ticket:history:{ticket_id}"
+        )
+    )
+    
+    if ticket_status != 'closed':
+        builder.row(
+            InlineKeyboardButton(
+                text="💬 Ответить",
+                callback_data=f"ticket:reply:{ticket_id}"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['check']} Закрыть тикет",
+                callback_data=f"ticket:close:{ticket_id}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад к списку",
+            callback_data="tickets:back"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_user_ticket_keyboard(ticket_id: int, ticket_status: str) -> InlineKeyboardMarkup:
+    """Клавиатура для тикета пользователя (возможность ответить)"""
+    builder = InlineKeyboardBuilder()
+    
+    if ticket_status in ('open', 'answered'):
+        builder.row(
+            InlineKeyboardButton(
+                text="💬 Написать ещё",
+                callback_data=f"ticket:user_reply:{ticket_id}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="📜 История сообщений",
+            callback_data=f"ticket:my_history:{ticket_id}"
         )
     )
     

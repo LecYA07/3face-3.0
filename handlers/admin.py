@@ -116,19 +116,28 @@ async def approve_submission(callback: CallbackQuery, state: FSMContext):
     team1 = await db.get_match_players(match_id, team=1)
     team2 = await db.get_match_players(match_id, team=2)
     
+    # Формируем список игроков без Markdown-проблем
+    def format_player(p):
+        username = p.get('username') or p.get('game_nickname') or 'игрок'
+        rating = p.get('rating_before', p.get('rating', 0))
+        return f"  • {username} [{rating}]"
+    
+    team1_list = "\n".join([format_player(p) for p in team1])
+    team2_list = "\n".join([format_player(p) for p in team2])
+    
     await callback.message.answer(
-        f"{EMOJI['target']} *Ввод результатов матча #{match_id}*\n"
+        f"{EMOJI['target']} <b>Ввод результатов матча #{match_id}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"{EMOJI['map']} Карта: {match['map_name']}\n\n"
-        f"{EMOJI['red']} *Команда 1* ({match['team1_start_side']}):\n"
-        f"Средний рейтинг: {match.get('team1_avg_rating', 0)}\n" +
-        "\n".join([f"  • @{p.get('username', 'user')} [{p.get('rating_before', p.get('rating', 0))}]" for p in team1]) +
-        f"\n\n{EMOJI['blue']} *Команда 2* ({match['team2_start_side']}):\n"
-        f"Средний рейтинг: {match.get('team2_avg_rating', 0)}\n" +
-        "\n".join([f"  • @{p.get('username', 'user')} [{p.get('rating_before', p.get('rating', 0))}]" for p in team2]) +
-        f"\n\n{EMOJI['info']} *Выберите команду-победителя:*",
+        f"{EMOJI['red']} <b>Команда 1</b> ({match['team1_start_side']}):\n"
+        f"Средний рейтинг: {match.get('team1_avg_rating', 0)}\n"
+        f"{team1_list}\n\n"
+        f"{EMOJI['blue']} <b>Команда 2</b> ({match['team2_start_side']}):\n"
+        f"Средний рейтинг: {match.get('team2_avg_rating', 0)}\n"
+        f"{team2_list}\n\n"
+        f"{EMOJI['info']} <b>Выберите команду-победителя:</b>",
         reply_markup=get_team_winner_keyboard(match_id),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     await callback.answer()
 
@@ -507,8 +516,8 @@ async def add_admin_command(message: Message):
     if len(args) < 2:
         await message.answer(
             f"{EMOJI['warning']} Укажите пользователя!\n"
-            f"Пример: `/addadmin @username`",
-            parse_mode="Markdown"
+            f"Пример: <code>/addadmin @username</code>",
+            parse_mode="HTML"
         )
         return
     
@@ -520,9 +529,9 @@ async def add_admin_command(message: Message):
         return
     
     await db.set_user_admin(user['user_id'], True)
+    username = user.get('username') or 'без username'
     await message.answer(
-        f"{EMOJI['crown']} Пользователь `{user['user_id']}` (@{user.get('username', 'unknown')}) назначен администратором.",
-        parse_mode="Markdown"
+        f"{EMOJI['crown']} Пользователь {user['user_id']} ({username}) назначен администратором."
     )
 
 
