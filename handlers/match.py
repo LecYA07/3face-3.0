@@ -570,6 +570,7 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
     import json
     from ai_verification import analyze_match_screenshot, download_and_encode_photo, format_ai_result_for_admin, is_valid_match_screenshot
     from keyboards import get_ai_verification_keyboard, get_ai_invalid_screenshot_keyboard
+    from config import AI_REPORT_ADMIN_ID
     
     try:
         # Получаем данные матча
@@ -621,8 +622,13 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
             # Валидный скриншот - обычная клавиатура
             keyboard = get_ai_verification_keyboard(verification_id, match_id)
         
-        # Отправляем уведомления всем админам и модераторам
-        admins = await db.get_all_admins_and_moderators()
+        # Определяем кому отправлять уведомления
+        # Если указан AI_REPORT_ADMIN_ID - отправляем только ему
+        # Иначе - всем админам и модераторам
+        if AI_REPORT_ADMIN_ID:
+            admins = [{'user_id': AI_REPORT_ADMIN_ID}]
+        else:
+            admins = await db.get_all_admins_and_moderators()
         
         submission = await db.get_submission(submission_id)
         
@@ -657,8 +663,16 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
 async def notify_admins_manual_check(bot, submission_id: int, match_id: int, error_reason: str):
     """Уведомить админов о необходимости ручной проверки"""
     from keyboards import get_submission_review_keyboard
+    from config import AI_REPORT_ADMIN_ID
     
-    admins = await db.get_all_admins_and_moderators()
+    # Определяем кому отправлять уведомления
+    # Если указан AI_REPORT_ADMIN_ID - отправляем только ему
+    # Иначе - всем админам и модераторам
+    if AI_REPORT_ADMIN_ID:
+        admins = [{'user_id': AI_REPORT_ADMIN_ID}]
+    else:
+        admins = await db.get_all_admins_and_moderators()
+    
     submission = await db.get_submission(submission_id)
     
     if not submission:

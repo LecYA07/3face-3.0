@@ -442,28 +442,30 @@ async def start_lobby_search_match(callback: CallbackQuery):
             await callback.answer(f"{player_name} ожидает подтверждения матча!", show_alert=True)
             return
     
-    # Удаляем лобби (освобождаем игроков)
-    await db.delete_lobby(lobby_id)
+    # НЕ удаляем лобби - оно сохраняется между матчами!
+    # Просто обновляем статус лобби на "searching"
+    await db.update_lobby_status(lobby_id, 'searching')
     
-    # Добавляем всех игроков в очередь поиска
+    # Добавляем всех игроков в очередь поиска с привязкой к лобби
     for player in players:
         user = await db.get_user(player['user_id'])
         if user and not user.get('is_banned'):
             party_id = await db.get_user_party(player['user_id'])
-            await db.join_queue(player['user_id'], platform, user['rating'], party_id, game_format)
+            await db.join_queue(player['user_id'], platform, user['rating'], party_id, game_format, lobby_id)
     
     # Уведомляем создателя
     queue_count = await db.get_queue_count(platform, game_format)
     
-    from keyboards import get_queue_keyboard
+    from keyboards import get_lobby_search_keyboard
     from utils import format_queue_status
     
     await callback.message.edit_text(
         f"{EMOJI['check']} *Поиск матча начат!*\n\n"
         f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
-        f"{EMOJI['users']} Игроков из лобби добавлено в поиск: *{len(players)}*\n\n"
-        + format_queue_status(queue_count, platform, game_format),
-        reply_markup=get_queue_keyboard(game_format),
+        f"{EMOJI['users']} Игроков из лобби в поиске: *{len(players)}*\n\n"
+        + format_queue_status(queue_count, platform, game_format) + "\n\n"
+        f"💡 *Лобби сохраняется* - после матча вы останетесь вместе!",
+        reply_markup=get_lobby_search_keyboard(lobby_id, game_format),
         parse_mode="Markdown"
     )
     await callback.answer("Все игроки добавлены в очередь!")
@@ -478,8 +480,9 @@ async def start_lobby_search_match(callback: CallbackQuery):
                     f"Создатель лобби запустил поиск матча.\n\n"
                     f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
                     f"{EMOJI['users']} В очереди: *{queue_count}* игроков\n\n"
+                    f"💡 *Лобби сохраняется* - после матча вы останетесь вместе!\n\n"
                     f"Ожидайте подбора соперников...",
-                    reply_markup=get_queue_keyboard(game_format),
+                    reply_markup=get_lobby_search_keyboard(lobby_id, game_format),
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -488,6 +491,68 @@ async def start_lobby_search_match(callback: CallbackQuery):
     # Пытаемся создать матч если достаточно игроков
     from handlers.match import try_create_match_from_queue
     await try_create_match_from_queue(callback.bot, platform, game_format)
+
+
+@router.callback_query(F.data.startswith("lobby:cancel_search:"))
+async def cancel_lobby_search(callback: CallbackQuery):
+    """Отменить поиск матча для лобби"""
+    lobby_id = int(callback.data.split(":")[2])
+    user_id = callback.from_user.id
+    
+    lobby = await db.get_lobby(lobby_id)
+    if not lobby:
+        await callback.answer("Лобби не найдено!", show_alert=True)
+        return
+    
+    # Только создатель может отменить поиск
+    if lobby['creator_id'] != user_id:
+        await callback.answer("Только создатель лобби может отменить поиск!", show_alert=True)
+        return
+    
+    # Проверяем что лобби в поиске
+    if lobby['status'] != 'searching':
+        await callback.answer("Лобби не в режиме поиска!", show_alert=True)
+        return
+    
+    # Получаем игроков лобби и удаляем их из очереди
+    players = await db.get_lobby_players(lobby_id)
+    for player in players:
+        await db.leave_queue(player['user_id'])
+    
+    # Возвращаем статус лобби на waiting
+    await db.update_lobby_status(lobby_id, 'waiting')
+    
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    
+    creator = await db.get_user(lobby['creator_id'])
+    creator_name = format_player_name(creator) if creator else "Неизвестно"
+    
+    is_full = len(players) >= lobby_size
+    
+    await callback.message.edit_text(
+        f"{EMOJI['cross']} *Поиск отменён*\n\n" +
+        format_lobby_info(lobby, players, creator_name),
+        reply_markup=get_lobby_keyboard(lobby_id, is_creator=True, is_full=is_full),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Поиск отменён")
+    
+    # Уведомляем остальных участников
+    for player in players:
+        if player['user_id'] != user_id:
+            try:
+                await callback.bot.send_message(
+                    player['user_id'],
+                    f"{EMOJI['cross']} *Поиск матча отменён*\n\n"
+                    f"Создатель лобби отменил поиск.\n\n" +
+                    format_lobby_info(lobby, players, creator_name),
+                    reply_markup=get_lobby_keyboard(lobby_id, is_creator=False, is_full=is_full),
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify player {player['user_id']} about search cancel: {e}")
 
 
 @router.callback_query(F.data.startswith("lobby:select_map:"))

@@ -24,6 +24,12 @@ class AdminStates(StatesGroup):
     entering_score = State()
     selecting_mvp = State()
     entering_player_stats = State()
+    # Состояния для поиска и редактирования игроков
+    searching_player = State()
+    editing_stat_value = State()
+    # Состояния для инлайн редактирования
+    waiting_search_query = State()
+    waiting_new_stat_value = State()
 
 
 async def is_admin(user_id: int) -> bool:
@@ -164,8 +170,8 @@ async def select_winner(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         f"{EMOJI['trophy']} Победитель: *{winner_text}*\n\n"
         f"{EMOJI['target']} Введите счёт матча в формате:\n"
-        f"`счёт_команды1:счёт_команды2`\n\n"
-        f"Например: `16:14` или `13:16`",
+        f"`счёт_команды2:счёт_команды1`\n\n"
+        f"Например: `14:16` или `16:13`",
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -179,11 +185,12 @@ async def enter_score(message: Message, state: FSMContext):
     
     try:
         score_parts = message.text.strip().split(":")
-        team1_score = int(score_parts[0])
-        team2_score = int(score_parts[1])
+        # Формат ввода: команда2:команда1, поэтому парсим в обратном порядке
+        team2_score = int(score_parts[0])
+        team1_score = int(score_parts[1])
     except (ValueError, IndexError):
         await message.answer(
-            f"{EMOJI['warning']} Неверный формат! Введите счёт в формате `16:14`",
+            f"{EMOJI['warning']} Неверный формат! Введите счёт в формате `14:16` (команда2:команда1)",
             parse_mode="Markdown"
         )
         return
@@ -200,7 +207,7 @@ async def enter_score(message: Message, state: FSMContext):
     
     await message.answer(
         f"{EMOJI['star']} *Выберите MVP матча:*\n\n"
-        f"Счёт: {team1_score}:{team2_score}",
+        f"Счёт: {team2_score}:{team1_score} (команда2:команда1)",
         reply_markup=get_mvp_selection_keyboard(match_id, all_players),
         parse_mode="Markdown"
     )
@@ -428,7 +435,7 @@ async def show_roles_menu(callback: CallbackQuery):
         return
     
     await callback.message.edit_text(
-        f"{EMOJI['crown']} *УПРАВЛЕНИЕ РОЛЯМИ*\n"
+        f"{EMOJI['crown']} *УПРАВЛЕНИЕ РОЛЯМИ И СТАТИСТИКОЙ*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
         f"*Команды для администраторов:*\n"
         f"`/addadmin @username` - назначить админа\n"
@@ -439,7 +446,13 @@ async def show_roles_menu(callback: CallbackQuery):
         f"*Управление рейтингом:*\n"
         f"`/addrating @username 100` - добавить рейтинг\n"
         f"`/removerating @username 50` - снять рейтинг\n"
-        f"`/setrating @username 1500` - установить рейтинг",
+        f"`/setrating @username 1500` - установить рейтинг\n\n"
+        f"*Универсальная команда статистики:*\n"
+        f"`/setstat @user параметр значение`\n"
+        f"_Параметры: rating, wins, losses, kills,_\n"
+        f"_deaths, assists, mvp\\_count, win\\_streak_\n\n"
+        f"`/resetstats @username` - сбросить статистику\n"
+        f"`/playerstats @username` - посмотреть статистику",
         reply_markup=get_admin_menu_keyboard(),
         parse_mode="Markdown"
     )
@@ -741,6 +754,429 @@ async def set_rating_command(message: Message):
     await message.answer(
         f"{EMOJI['chart']} Рейтинг пользователя @{user.get('username', 'unknown')} изменён.\n"
         f"Было: *{old_rating}* → Стало: *{new_rating}*",
+        parse_mode="Markdown"
+    )
+
+
+# ============ ADMIN STATS EDITING COMMANDS ============
+
+@router.message(F.text.startswith("/setwins"))
+async def set_wins_command(message: Message):
+    """Установить количество побед пользователю"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/setwins @username 10`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    try:
+        new_value = int(args[2])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Укажите число!")
+        return
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get('wins', 0)
+    await db.set_user_stat(user['user_id'], 'wins', new_value)
+    
+    await message.answer(
+        f"{EMOJI['trophy']} Победы пользователя @{user.get('username', 'unknown')} изменены.\n"
+        f"Было: *{old_value}* → Стало: *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/setlosses"))
+async def set_losses_command(message: Message):
+    """Установить количество поражений пользователю"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/setlosses @username 5`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    try:
+        new_value = int(args[2])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Укажите число!")
+        return
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get('losses', 0)
+    await db.set_user_stat(user['user_id'], 'losses', new_value)
+    
+    await message.answer(
+        f"{EMOJI['cross']} Поражения пользователя @{user.get('username', 'unknown')} изменены.\n"
+        f"Было: *{old_value}* → Стало: *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/setkills"))
+async def set_kills_command(message: Message):
+    """Установить количество убийств пользователю"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/setkills @username 100`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    try:
+        new_value = int(args[2])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Укажите число!")
+        return
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get('kills', 0)
+    await db.set_user_stat(user['user_id'], 'kills', new_value)
+    
+    await message.answer(
+        f"{EMOJI['sword']} Убийства пользователя @{user.get('username', 'unknown')} изменены.\n"
+        f"Было: *{old_value}* → Стало: *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/setdeaths"))
+async def set_deaths_command(message: Message):
+    """Установить количество смертей пользователю"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/setdeaths @username 50`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    try:
+        new_value = int(args[2])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Укажите число!")
+        return
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get('deaths', 0)
+    await db.set_user_stat(user['user_id'], 'deaths', new_value)
+    
+    await message.answer(
+        f"💀 Смерти пользователя @{user.get('username', 'unknown')} изменены.\n"
+        f"Было: *{old_value}* → Стало: *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/setassists"))
+async def set_assists_command(message: Message):
+    """Установить количество ассистов пользователю"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/setassists @username 30`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    try:
+        new_value = int(args[2])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Укажите число!")
+        return
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get('assists', 0)
+    await db.set_user_stat(user['user_id'], 'assists', new_value)
+    
+    await message.answer(
+        f"🤝 Ассисты пользователя @{user.get('username', 'unknown')} изменены.\n"
+        f"Было: *{old_value}* → Стало: *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/setmvp"))
+async def set_mvp_command(message: Message):
+    """Установить количество MVP пользователю"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/setmvp @username 5`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    try:
+        new_value = int(args[2])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Укажите число!")
+        return
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get('mvp_count', 0)
+    await db.set_user_stat(user['user_id'], 'mvp_count', new_value)
+    
+    await message.answer(
+        f"{EMOJI['star']} MVP пользователя @{user.get('username', 'unknown')} изменены.\n"
+        f"Было: *{old_value}* → Стало: *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/setstat"))
+async def set_stat_command(message: Message):
+    """
+    Универсальная команда для изменения любого параметра статистики игрока.
+    
+    Формат: /setstat @username параметр значение
+    
+    Доступные параметры:
+    - rating - рейтинг
+    - wins - победы
+    - losses - поражения
+    - kills - убийства
+    - deaths - смерти
+    - assists - ассисты
+    - mvp_count - количество MVP
+    - win_streak - текущий винстрик
+    """
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    
+    # Показываем справку если недостаточно аргументов
+    if len(args) < 4:
+        await message.answer(
+            f"{EMOJI['gear']} *Универсальная команда изменения статистики*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"*Формат:* `/setstat @username параметр значение`\n\n"
+            f"*Доступные параметры:*\n"
+            f"• `rating` \\- рейтинг\n"
+            f"• `wins` \\- победы\n"
+            f"• `losses` \\- поражения\n"
+            f"• `kills` \\- убийства\n"
+            f"• `deaths` \\- смерти\n"
+            f"• `assists` \\- ассисты\n"
+            f"• `mvp_count` \\- количество MVP\n"
+            f"• `win_streak` \\- текущий винстрик\n\n"
+            f"*Примеры:*\n"
+            f"`/setstat @player rating 1500`\n"
+            f"`/setstat 123456789 wins 10`\n"
+            f"`/setstat @player kills 100`",
+            parse_mode="MarkdownV2"
+        )
+        return
+    
+    target = args[1]
+    stat_name = args[2].lower()
+    
+    try:
+        new_value = int(args[3])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} Значение должно быть числом!")
+        return
+    
+    # Проверяем допустимость параметра
+    allowed_stats = {
+        'rating': ('📊 Рейтинг', 'rating'),
+        'wins': ('🏆 Победы', 'wins'),
+        'losses': ('❌ Поражения', 'losses'),
+        'kills': ('⚔️ Убийства', 'kills'),
+        'deaths': ('💀 Смерти', 'deaths'),
+        'assists': ('🤝 Ассисты', 'assists'),
+        'mvp_count': ('⭐ MVP', 'mvp_count'),
+        'mvp': ('⭐ MVP', 'mvp_count'),  # Алиас
+        'win_streak': ('🔥 Винстрик', 'win_streak'),
+        'streak': ('🔥 Винстрик', 'win_streak'),  # Алиас
+    }
+    
+    if stat_name not in allowed_stats:
+        await message.answer(
+            f"{EMOJI['warning']} Неизвестный параметр `{stat_name}`!\n\n"
+            f"Доступные параметры:\n"
+            f"`rating`, `wins`, `losses`, `kills`, `deaths`, `assists`, `mvp_count`, `win_streak`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    stat_display_name, stat_db_name = allowed_stats[stat_name]
+    
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    old_value = user.get(stat_db_name, 0)
+    
+    success = await db.set_user_stat(user['user_id'], stat_db_name, new_value)
+    
+    if not success:
+        await message.answer(f"{EMOJI['warning']} Ошибка при изменении параметра!")
+        return
+    
+    username_display = user.get('username') or user.get('game_nickname') or str(user['user_id'])
+    
+    await message.answer(
+        f"{EMOJI['check']} *Статистика изменена*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Игрок: *{username_display}*\n"
+        f"{stat_display_name}: *{old_value}* → *{new_value}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/resetstats"))
+async def reset_stats_command(message: Message):
+    """Сбросить статистику пользователя"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/resetstats @username`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    await db.reset_user_stats(user['user_id'])
+    
+    await message.answer(
+        f"{EMOJI['check']} Статистика пользователя @{user.get('username', 'unknown')} сброшена.\n"
+        f"Рейтинг установлен на 1000, все показатели обнулены.",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(F.text.startswith("/playerstats"))
+async def player_stats_command(message: Message):
+    """Показать полную статистику игрока"""
+    if not await is_moderator(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для модераторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n"
+            f"Пример: `/playerstats @username`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    target = args[1]
+    user = await _get_target_user(target)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
+        return
+    
+    # Расчёт KDA
+    kills = user.get('kills', 0)
+    deaths = user.get('deaths', 0)
+    assists = user.get('assists', 0)
+    kda = (kills + assists) / max(deaths, 1)
+    
+    # Расчёт винрейта
+    wins = user.get('wins', 0)
+    losses = user.get('losses', 0)
+    total_games = wins + losses
+    winrate = (wins / total_games * 100) if total_games > 0 else 0
+    
+    await message.answer(
+        f"{EMOJI['user']} *Статистика игрока*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Ник: *{user.get('game_nickname') or user.get('username') or 'Не указан'}*\n"
+        f"🆔 Telegram ID: `{user['user_id']}`\n"
+        f"🎮 Game ID: `{user.get('game_id') or 'Не указан'}`\n\n"
+        f"{EMOJI['chart']} *Рейтинг:* {user.get('rating', 1000)}\n"
+        f"{EMOJI['trophy']} *Побед:* {wins}\n"
+        f"{EMOJI['cross']} *Поражений:* {losses}\n"
+        f"📊 *Винрейт:* {winrate:.1f}%\n\n"
+        f"⚔️ *Убийств:* {kills}\n"
+        f"💀 *Смертей:* {deaths}\n"
+        f"🤝 *Ассистов:* {assists}\n"
+        f"📈 *KDA:* {kda:.2f}\n\n"
+        f"{EMOJI['star']} *MVP:* {user.get('mvp_count', 0)}\n"
+        f"🔥 *Текущий винстрик:* {user.get('win_streak', 0)}\n\n"
+        f"🖥️ *Платформа:* {user.get('platform', 'pc')}\n"
+        f"🚫 *Забанен:* {'Да' if user.get('is_banned') else 'Нет'}\n"
+        f"👑 *Админ:* {'Да' if user.get('is_admin') else 'Нет'}\n"
+        f"🛡️ *Модератор:* {'Да' if user.get('is_moderator') else 'Нет'}",
         parse_mode="Markdown"
     )
 
@@ -1636,13 +2072,23 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
     for player in team1_players:
         is_winner = winner_team == 1
         is_mvp = player['user_id'] == mvp_user_id
-        rating_change = calculate_rating_change(winner_rating, loser_rating, is_winner, is_mvp)
         
         # Получаем KDA из статистики AI или используем 0
         player_stats = stats_by_user.get(player['user_id'], {'kills': 0, 'deaths': 0, 'assists': 0})
         kills = player_stats['kills']
         deaths = player_stats['deaths']
         assists = player_stats['assists']
+        
+        # Получаем текущий винстрик игрока
+        user_data = await db.get_user(player['user_id'])
+        current_win_streak = user_data.get('win_streak', 0) if user_data else 0
+        
+        # Рассчитываем изменение рейтинга с учётом KDA и винстрика
+        rating_change = calculate_rating_change(
+            winner_rating, loser_rating, is_winner, is_mvp,
+            kills=kills, deaths=deaths, assists=assists,
+            win_streak=current_win_streak + 1 if is_winner else 0
+        )
         
         await db.update_match_player_stats(
             match_id=match_id,
@@ -1669,13 +2115,23 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
     for player in team2_players:
         is_winner = winner_team == 2
         is_mvp = player['user_id'] == mvp_user_id
-        rating_change = calculate_rating_change(winner_rating, loser_rating, is_winner, is_mvp)
         
         # Получаем KDA из статистики AI или используем 0
         player_stats = stats_by_user.get(player['user_id'], {'kills': 0, 'deaths': 0, 'assists': 0})
         kills = player_stats['kills']
         deaths = player_stats['deaths']
         assists = player_stats['assists']
+        
+        # Получаем текущий винстрик игрока
+        user_data = await db.get_user(player['user_id'])
+        current_win_streak = user_data.get('win_streak', 0) if user_data else 0
+        
+        # Рассчитываем изменение рейтинга с учётом KDA и винстрика
+        rating_change = calculate_rating_change(
+            winner_rating, loser_rating, is_winner, is_mvp,
+            kills=kills, deaths=deaths, assists=assists,
+            win_streak=current_win_streak + 1 if is_winner else 0
+        )
         
         await db.update_match_player_stats(
             match_id=match_id,
@@ -1698,6 +2154,569 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
             is_mvp=is_mvp
         )
 
+
+# ============ PLAYER SEARCH & STATS EDITING HANDLERS ============
+
+@router.callback_query(F.data == "search:player")
+async def search_player_start(callback: CallbackQuery, state: FSMContext):
+    """Начать поиск игрока"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_search_query)
+    
+    await callback.message.edit_text(
+        f"🔍 *Поиск игрока*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Введите для поиска:\n"
+        f"• Telegram ID (числом)\n"
+        f"• @username\n"
+        f"• Игровой ник\n"
+        f"• Game ID\n\n"
+        f"Или отправьте часть ника для поиска.",
+        reply_markup=get_admin_menu_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_search_query)
+async def process_search_query(message: Message, state: FSMContext):
+    """Обработать поисковый запрос"""
+    if not await is_moderator(message.from_user.id):
+        await state.clear()
+        return
+    
+    from keyboards import get_search_results_keyboard
+    
+    query = message.text.strip()
+    
+    if len(query) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} Слишком короткий запрос! Введите минимум 2 символа."
+        )
+        return
+    
+    # Ищем пользователей
+    users = await db.search_users(query, limit=10)
+    
+    if not users:
+        await message.answer(
+            f"{EMOJI['warning']} *Игроки не найдены*\n\n"
+            f"По запросу «{query}» ничего не найдено.\n"
+            f"Попробуйте другой запрос.",
+            reply_markup=get_admin_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+        await state.clear()
+        return
+    
+    await state.clear()
+    
+    # Показываем результаты поиска
+    await message.answer(
+        f"🔍 *Результаты поиска*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"По запросу «{query}» найдено: *{len(users)}*\n\n"
+        f"Выберите игрока:",
+        reply_markup=get_search_results_keyboard(users, query),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("search:select:"))
+async def select_player_from_search(callback: CallbackQuery):
+    """Выбрать игрока из результатов поиска"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    from keyboards import get_player_info_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    # Проверяем права - админ может редактировать, модератор только смотреть
+    is_admin_user = await is_admin(callback.from_user.id)
+    
+    # Расчёт статистики
+    kills = user.get('kills', 0)
+    deaths = user.get('deaths', 0)
+    assists = user.get('assists', 0)
+    kda = (kills + assists) / max(deaths, 1)
+    
+    wins = user.get('wins', 0)
+    losses = user.get('losses', 0)
+    total_games = wins + losses
+    winrate = (wins / total_games * 100) if total_games > 0 else 0
+    
+    await callback.message.edit_text(
+        f"{EMOJI['user']} *Информация об игроке*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 *Ник:* {user.get('game_nickname') or 'Не указан'}\n"
+        f"📛 *Username:* @{user.get('username') or 'нет'}\n"
+        f"🆔 *Telegram ID:* `{user['user_id']}`\n"
+        f"🎮 *Game ID:* `{user.get('game_id') or 'Не указан'}`\n\n"
+        f"📊 *Статистика:*\n"
+        f"├ Рейтинг: *{user.get('rating', 1000)}*\n"
+        f"├ Побед: *{wins}*\n"
+        f"├ Поражений: *{losses}*\n"
+        f"├ Винрейт: *{winrate:.1f}%*\n"
+        f"├ K/D/A: *{kills}/{deaths}/{assists}*\n"
+        f"├ KDA: *{kda:.2f}*\n"
+        f"├ MVP: *{user.get('mvp_count', 0)}*\n"
+        f"└ Винстрик: *{user.get('win_streak', 0)}*\n\n"
+        f"🖥️ *Платформа:* {user.get('platform', 'pc')}\n"
+        f"🚫 *Забанен:* {'Да' if user.get('is_banned') else 'Нет'}\n"
+        f"👑 *Роль:* {'Админ' if user.get('is_admin') else 'Модератор' if user.get('is_moderator') else 'Игрок'}",
+        reply_markup=get_player_info_keyboard(user_id, is_admin=is_admin_user),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editstats:menu:"))
+async def show_edit_stats_menu(callback: CallbackQuery):
+    """Показать меню редактирования статистики"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_edit_stats_menu_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    await callback.message.edit_text(
+        f"{EMOJI['gear']} *Редактирование статистики*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Игрок: *{username}*\n"
+        f"🆔 ID: `{user_id}`\n\n"
+        f"*Текущие значения:*\n"
+        f"├ 📊 Рейтинг: *{user.get('rating', 1000)}*\n"
+        f"├ 🏆 Победы: *{user.get('wins', 0)}*\n"
+        f"├ ❌ Поражения: *{user.get('losses', 0)}*\n"
+        f"├ ⚔️ Убийства: *{user.get('kills', 0)}*\n"
+        f"├ 💀 Смерти: *{user.get('deaths', 0)}*\n"
+        f"├ 🤝 Ассисты: *{user.get('assists', 0)}*\n"
+        f"├ ⭐ MVP: *{user.get('mvp_count', 0)}*\n"
+        f"└ 🔥 Винстрик: *{user.get('win_streak', 0)}*\n\n"
+        f"Выберите параметр для изменения:",
+        reply_markup=get_edit_stats_menu_keyboard(user_id),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editstats:set:"))
+async def start_edit_stat(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование конкретного параметра"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_cancel_input_keyboard
+    
+    parts = callback.data.split(":")
+    user_id = int(parts[2])
+    stat_name = parts[3]
+    
+    user = await db.get_user(user_id)
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    # Маппинг названий
+    stat_labels = {
+        'rating': ('📊 Рейтинг', user.get('rating', 1000)),
+        'wins': ('🏆 Победы', user.get('wins', 0)),
+        'losses': ('❌ Поражения', user.get('losses', 0)),
+        'kills': ('⚔️ Убийства', user.get('kills', 0)),
+        'deaths': ('💀 Смерти', user.get('deaths', 0)),
+        'assists': ('🤝 Ассисты', user.get('assists', 0)),
+        'mvp_count': ('⭐ MVP', user.get('mvp_count', 0)),
+        'win_streak': ('🔥 Винстрик', user.get('win_streak', 0)),
+    }
+    
+    if stat_name not in stat_labels:
+        await callback.answer("Неизвестный параметр!", show_alert=True)
+        return
+    
+    label, current_value = stat_labels[stat_name]
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    # Сохраняем данные в состояние
+    await state.update_data(
+        edit_user_id=user_id,
+        edit_stat_name=stat_name,
+        edit_stat_label=label
+    )
+    await state.set_state(AdminStates.waiting_new_stat_value)
+    
+    await callback.message.edit_text(
+        f"{EMOJI['gear']} *Изменение параметра*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Игрок: *{username}*\n"
+        f"📝 Параметр: *{label}*\n"
+        f"📌 Текущее значение: *{current_value}*\n\n"
+        f"Введите новое значение (целое число):",
+        reply_markup=get_cancel_input_keyboard(user_id),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_new_stat_value)
+async def process_new_stat_value(message: Message, state: FSMContext):
+    """Обработать новое значение параметра"""
+    if not await is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    from keyboards import get_edit_stats_menu_keyboard
+    
+    data = await state.get_data()
+    user_id = data.get('edit_user_id')
+    stat_name = data.get('edit_stat_name')
+    stat_label = data.get('edit_stat_label')
+    
+    if not user_id or not stat_name:
+        await message.answer(f"{EMOJI['warning']} Ошибка! Попробуйте снова.")
+        await state.clear()
+        return
+    
+    # Парсим значение
+    try:
+        new_value = int(message.text.strip())
+    except ValueError:
+        await message.answer(
+            f"{EMOJI['warning']} Введите целое число!\n\n"
+            f"Например: `100` или `1500`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Проверяем допустимость значения
+    if new_value < 0 and stat_name != 'rating':
+        await message.answer(f"{EMOJI['warning']} Значение не может быть отрицательным!")
+        return
+    
+    # Получаем текущие данные пользователя
+    user = await db.get_user(user_id)
+    if not user:
+        await message.answer(f"{EMOJI['warning']} Игрок не найден!")
+        await state.clear()
+        return
+    
+    old_value = user.get(stat_name, 0)
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    # Применяем изменение
+    success = await db.set_user_stat(user_id, stat_name, new_value)
+    
+    await state.clear()
+    
+    if success:
+        await message.answer(
+            f"{EMOJI['check']} *Статистика изменена!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Игрок: *{username}*\n"
+            f"📝 Параметр: *{stat_label}*\n"
+            f"📊 Было: *{old_value}* → Стало: *{new_value}*",
+            reply_markup=get_edit_stats_menu_keyboard(user_id),
+            parse_mode="Markdown"
+        )
+    else:
+        await message.answer(
+            f"{EMOJI['warning']} Ошибка при изменении параметра!",
+            reply_markup=get_edit_stats_menu_keyboard(user_id)
+        )
+
+
+@router.callback_query(F.data.startswith("editstats:reset:"))
+async def confirm_reset_stats(callback: CallbackQuery):
+    """Подтвердить сброс статистики"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_confirm_reset_stats_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    await callback.message.edit_text(
+        f"⚠️ *Подтверждение сброса*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Вы уверены, что хотите сбросить\n"
+        f"ВСЮ статистику игрока *{username}*?\n\n"
+        f"• Рейтинг станет 1000\n"
+        f"• Все показатели обнулятся\n\n"
+        f"❗ Это действие нельзя отменить!",
+        reply_markup=get_confirm_reset_stats_keyboard(user_id),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editstats:confirm_reset:"))
+async def execute_reset_stats(callback: CallbackQuery):
+    """Выполнить сброс статистики"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_player_info_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    # Сбрасываем статистику
+    await db.reset_user_stats(user_id)
+    
+    await callback.message.edit_text(
+        f"{EMOJI['check']} *Статистика сброшена!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Игрок: *{username}*\n\n"
+        f"• Рейтинг: 1000\n"
+        f"• Победы: 0\n"
+        f"• Поражения: 0\n"
+        f"• K/D/A: 0/0/0\n"
+        f"• MVP: 0\n"
+        f"• Винстрик: 0",
+        reply_markup=get_player_info_keyboard(user_id, is_admin=True),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Статистика сброшена!")
+
+
+@router.callback_query(F.data.startswith("editstats:back:"))
+async def back_to_player_info(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к информации об игроке"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    await state.clear()
+    
+    from keyboards import get_player_info_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    is_admin_user = await is_admin(callback.from_user.id)
+    
+    # Расчёт статистики
+    kills = user.get('kills', 0)
+    deaths = user.get('deaths', 0)
+    assists = user.get('assists', 0)
+    kda = (kills + assists) / max(deaths, 1)
+    
+    wins = user.get('wins', 0)
+    losses = user.get('losses', 0)
+    total_games = wins + losses
+    winrate = (wins / total_games * 100) if total_games > 0 else 0
+    
+    await callback.message.edit_text(
+        f"{EMOJI['user']} *Информация об игроке*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 *Ник:* {user.get('game_nickname') or 'Не указан'}\n"
+        f"📛 *Username:* @{user.get('username') or 'нет'}\n"
+        f"🆔 *Telegram ID:* `{user['user_id']}`\n"
+        f"🎮 *Game ID:* `{user.get('game_id') or 'Не указан'}`\n\n"
+        f"📊 *Статистика:*\n"
+        f"├ Рейтинг: *{user.get('rating', 1000)}*\n"
+        f"├ Побед: *{wins}*\n"
+        f"├ Поражений: *{losses}*\n"
+        f"├ Винрейт: *{winrate:.1f}%*\n"
+        f"├ K/D/A: *{kills}/{deaths}/{assists}*\n"
+        f"├ KDA: *{kda:.2f}*\n"
+        f"├ MVP: *{user.get('mvp_count', 0)}*\n"
+        f"└ Винстрик: *{user.get('win_streak', 0)}*\n\n"
+        f"🖥️ *Платформа:* {user.get('platform', 'pc')}\n"
+        f"🚫 *Забанен:* {'Да' if user.get('is_banned') else 'Нет'}\n"
+        f"👑 *Роль:* {'Админ' if user.get('is_admin') else 'Модератор' if user.get('is_moderator') else 'Игрок'}",
+        reply_markup=get_player_info_keyboard(user_id, is_admin=is_admin_user),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("editstats:ban:"))
+async def ban_player_from_search(callback: CallbackQuery):
+    """Забанить игрока из поиска"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_player_info_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    if user.get('is_banned'):
+        await callback.answer("Игрок уже забанен!", show_alert=True)
+        return
+    
+    await db.ban_user(user_id)
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    await callback.message.edit_text(
+        f"{EMOJI['lock']} *Игрок забанен!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Игрок: *{username}*\n"
+        f"🆔 ID: `{user_id}`\n\n"
+        f"Игрок больше не сможет пользоваться ботом.",
+        reply_markup=get_player_info_keyboard(user_id, is_admin=True),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Игрок забанен!")
+
+
+@router.callback_query(F.data.startswith("editstats:unban:"))
+async def unban_player_from_search(callback: CallbackQuery):
+    """Разбанить игрока из поиска"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_player_info_keyboard
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    if not user.get('is_banned'):
+        await callback.answer("Игрок не забанен!", show_alert=True)
+        return
+    
+    await db.unban_user(user_id)
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    await callback.message.edit_text(
+        f"{EMOJI['check']} *Игрок разбанен!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Игрок: *{username}*\n"
+        f"🆔 ID: `{user_id}`\n\n"
+        f"Игрок снова может пользоваться ботом.",
+        reply_markup=get_player_info_keyboard(user_id, is_admin=True),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Игрок разбанен!")
+
+
+@router.callback_query(F.data.startswith("editstats:history:"))
+async def show_player_match_history(callback: CallbackQuery):
+    """Показать историю матчей игрока"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    user_id = int(callback.data.split(":")[2])
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    # Получаем историю матчей
+    matches = await db.get_user_match_history(user_id, limit=10)
+    
+    username = user.get('game_nickname') or user.get('username') or str(user_id)
+    
+    if not matches:
+        await callback.message.answer(
+            f"{EMOJI['chart']} *История матчей*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Игрок: *{username}*\n\n"
+            f"У игрока пока нет завершённых матчей.",
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+    
+    history_text = f"{EMOJI['chart']} *История матчей*\n"
+    history_text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    history_text += f"👤 Игрок: *{username}*\n\n"
+    
+    for i, match in enumerate(matches, 1):
+        is_win = match.get('winner_team') == match.get('team')
+        result_emoji = "🏆" if is_win else "❌"
+        rating_change = match.get('rating_change', 0)
+        rating_sign = "+" if rating_change >= 0 else ""
+        mvp = " ⭐" if match.get('is_mvp') else ""
+        
+        history_text += (
+            f"{i}. {result_emoji} Матч #{match['match_id']}\n"
+            f"   📍 {match.get('map_name', '?')} | "
+            f"{match.get('team1_score', 0)}:{match.get('team2_score', 0)}\n"
+            f"   {rating_sign}{rating_change} рейтинга{mvp}\n\n"
+        )
+    
+    await callback.message.answer(
+        history_text,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "search:back_admin")
+async def back_to_admin_panel(callback: CallbackQuery, state: FSMContext):
+    """Вернуться в админ-панель"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    await state.clear()
+    
+    pending = await db.get_pending_submissions()
+    
+    await callback.message.edit_text(
+        f"{EMOJI['gear']} *ПАНЕЛЬ МОДЕРАТОРА*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{EMOJI['camera']} Заявок на проверку: *{len(pending)}*\n\n"
+        f"Выберите действие:",
+        reply_markup=get_admin_menu_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+# ============ BACKUP CALLBACK ============
 
 @router.callback_query(F.data == "admin:backup")
 async def backup_database_callback(callback: CallbackQuery):

@@ -22,6 +22,7 @@ async def init_db():
                 deaths INTEGER DEFAULT 0,
                 assists INTEGER DEFAULT 0,
                 mvp_count INTEGER DEFAULT 0,
+                win_streak INTEGER DEFAULT 0,
                 platform TEXT DEFAULT 'pc',
                 registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_banned INTEGER DEFAULT 0,
@@ -37,10 +38,12 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER UNIQUE,
                 party_id INTEGER DEFAULT NULL,
+                lobby_id INTEGER DEFAULT NULL,
                 platform TEXT DEFAULT 'pc',
                 rating INTEGER,
                 joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                FOREIGN KEY (user_id) REFERENCES users(user_id),
+                FOREIGN KEY (lobby_id) REFERENCES lobbies(lobby_id)
             )
         """)
         
@@ -248,6 +251,18 @@ async def init_db():
             await db.execute("ALTER TABLE matchmaking_queue ADD COLUMN game_format TEXT DEFAULT '5x5'")
         except Exception:
             pass  # Столбец уже существует
+        
+        # Миграция: добавляем столбец win_streak в users если его нет
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN win_streak INTEGER DEFAULT 0")
+        except Exception:
+            pass  # Столбец уже существует
+        
+        # Миграция: добавляем столбец lobby_id в matchmaking_queue если его нет
+        try:
+            await db.execute("ALTER TABLE matchmaking_queue ADD COLUMN lobby_id INTEGER DEFAULT NULL")
+        except Exception:
+            pass  # Столбец уже существует
 
         await db.commit()
 
@@ -346,6 +361,55 @@ async def set_user_rating(user_id: int, new_rating: int) -> None:
             "UPDATE users SET rating = MAX(?, ?) WHERE user_id = ?", 
             (MIN_RATING, new_rating, user_id)
         )
+        await db.commit()
+
+
+async def set_user_stat(user_id: int, stat_name: str, value: int) -> bool:
+    """
+    Установить любой числовой параметр статистики пользователя.
+    
+    Допустимые параметры: rating, wins, losses, kills, deaths, assists, mvp_count, win_streak
+    
+    Returns:
+        True если успешно, False если параметр недопустим
+    """
+    allowed_stats = ['rating', 'wins', 'losses', 'kills', 'deaths', 'assists', 'mvp_count', 'win_streak']
+    
+    if stat_name not in allowed_stats:
+        return False
+    
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        if stat_name == 'rating':
+            # Для рейтинга применяем минимальное значение
+            await db.execute(
+                f"UPDATE users SET {stat_name} = MAX(?, ?) WHERE user_id = ?", 
+                (MIN_RATING, value, user_id)
+            )
+        else:
+            # Для остальных параметров просто устанавливаем значение (не меньше 0)
+            await db.execute(
+                f"UPDATE users SET {stat_name} = MAX(0, ?) WHERE user_id = ?", 
+                (value, user_id)
+            )
+        await db.commit()
+        return True
+
+
+async def reset_user_stats(user_id: int) -> None:
+    """Сбросить всю статистику пользователя"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            UPDATE users SET 
+                rating = ?,
+                wins = 0,
+                losses = 0,
+                kills = 0,
+                deaths = 0,
+                assists = 0,
+                mvp_count = 0,
+                win_streak = 0
+            WHERE user_id = ?
+        """, (DEFAULT_RATING, user_id))
         await db.commit()
 
 
@@ -510,14 +574,14 @@ async def search_users(query: str, limit: int = 10) -> List[Dict[str, Any]]:
 
 # ============ MATCHMAKING QUEUE FUNCTIONS ============
 
-async def join_queue(user_id: int, platform: str, rating: int, party_id: int = None, game_format: str = "5x5") -> bool:
+async def join_queue(user_id: int, platform: str, rating: int, party_id: int = None, game_format: str = "5x5", lobby_id: int = None) -> bool:
     """Добавить игрока в очередь поиска"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         try:
             await db.execute("""
-                INSERT OR REPLACE INTO matchmaking_queue (user_id, platform, rating, party_id, game_format, joined_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (user_id, platform, rating, party_id, game_format, datetime.now()))
+                INSERT OR REPLACE INTO matchmaking_queue (user_id, platform, rating, party_id, game_format, lobby_id, joined_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, platform, rating, party_id, game_format, lobby_id, datetime.now()))
             await db.commit()
             return True
         except Exception:
@@ -719,16 +783,50 @@ async def delete_lobby(lobby_id: int) -> None:
 
 
 async def get_user_active_lobby(user_id: int) -> Optional[int]:
-    """Получить активное лобби пользователя"""
+    """Получить активное лобби пользователя (включая статусы waiting, searching)"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         query = """
             SELECT lp.lobby_id FROM lobby_players lp
             JOIN lobbies l ON lp.lobby_id = l.lobby_id
-            WHERE lp.user_id = ? AND l.status = 'waiting'
+            WHERE lp.user_id = ? AND l.status IN ('waiting', 'searching')
         """
         async with db.execute(query, (user_id,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
+
+
+async def get_user_lobby_any_status(user_id: int) -> Optional[int]:
+    """Получить лобби пользователя в любом активном статусе (включая in_match, ready_check)"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        query = """
+            SELECT lp.lobby_id FROM lobby_players lp
+            JOIN lobbies l ON lp.lobby_id = l.lobby_id
+            WHERE lp.user_id = ? AND l.status NOT IN ('finished', 'cancelled')
+        """
+        async with db.execute(query, (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def get_user_queue_lobby(user_id: int) -> Optional[int]:
+    """Получить lobby_id из очереди поиска для пользователя"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute(
+            "SELECT lobby_id FROM matchmaking_queue WHERE user_id = ?", 
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def restore_lobby_after_match(lobby_id: int) -> None:
+    """Восстановить статус лобби после матча для продолжения игры"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE lobbies SET status = 'waiting' WHERE lobby_id = ? AND status IN ('in_match', 'ready_check')", 
+            (lobby_id,)
+        )
+        await db.commit()
 
 
 # ============ PARTY FUNCTIONS ============

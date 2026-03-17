@@ -31,12 +31,19 @@ def calculate_team_rating(players: List[Dict[str, Any]]) -> int:
 
 
 def calculate_rating_change(winner_team_rating: int, loser_team_rating: int, 
-                           is_winner: bool, is_mvp: bool = False) -> int:
+                           is_winner: bool, is_mvp: bool = False,
+                           kills: int = 0, deaths: int = 0, assists: int = 0,
+                           win_streak: int = 0) -> int:
     """
     Рассчитать изменение рейтинга на основе разницы рейтингов команд.
     
     Если победили более сильную команду - больше очков
     Если проиграли более слабой команде - больше потеря
+    
+    Дополнительные бонусы:
+    - MVP: базовый бонус + случайный множитель + бонус за KDA
+    - Винстрик: +1-3 очка за каждую победу в серии
+    - KDA бонус для MVP: дополнительные очки за хорошую статистику
     """
     rating_diff = winner_team_rating - loser_team_rating
     
@@ -44,14 +51,45 @@ def calculate_rating_change(winner_team_rating: int, loser_team_rating: int,
         base = BASE_RATING_WIN
         modifier = int(-rating_diff * RATING_DIFF_MULTIPLIER)
         change = max(10, base + modifier)
+        
+        # Бонус за винстрик (для победителей)
+        if win_streak > 1:
+            # От 1 до 3 очков за каждую победу в серии (макс +15 за 5 побед подряд)
+            streak_bonus = min(win_streak - 1, 5) * random.randint(1, 3)
+            change += streak_bonus
     else:
         base = BASE_RATING_LOSE
         modifier = int(rating_diff * RATING_DIFF_MULTIPLIER)
         change = max(10, base - modifier)
         change = -change
     
+    # MVP бонус с рандомом и учётом KDA
     if is_mvp:
-        change += RATING_MVP_BONUS
+        # Базовый MVP бонус (8-12 вместо ровных 10)
+        mvp_base = RATING_MVP_BONUS + random.randint(-2, 2)
+        
+        # Бонус за KDA (impact = kills + assists)
+        impact = kills + assists
+        # +1 очко за каждые 5 impact сверх 10, максимум +6
+        kda_bonus = min(max(0, (impact - 10) // 5), 6)
+        
+        # Бонус за высокий K/D (если deaths > 0)
+        kd_ratio = kills / max(deaths, 1)
+        if kd_ratio >= 3.0:
+            kd_bonus = random.randint(3, 5)
+        elif kd_ratio >= 2.0:
+            kd_bonus = random.randint(1, 3)
+        elif kd_ratio >= 1.5:
+            kd_bonus = random.randint(0, 2)
+        else:
+            kd_bonus = 0
+        
+        # Небольшой случайный бонус (+0-3)
+        random_bonus = random.randint(0, 3)
+        
+        # Итоговый MVP бонус
+        total_mvp_bonus = mvp_base + kda_bonus + kd_bonus + random_bonus
+        change += total_mvp_bonus
     
     return change
 
@@ -243,9 +281,9 @@ def format_player_stats(player: Dict[str, Any]) -> str:
         f"├ {EMOJI['sword']} Победы: *{wins}*\n"
         f"├ {EMOJI['shield']} Поражения: *{losses}*\n"
         f"├ {EMOJI['target']} Винрейт: *{winrate:.1f}%*\n"
-        f"├ 🎯 K/D/A: *{kills}/{deaths}/{assists}*\n"
+        f"├ 🎯 K/A/D: *{kills}/{assists}/{deaths}*\n"
         f"├ {EMOJI['fire']} K/D: *{kd:.2f}*\n"
-        f"├ 📊 Avg K/D/A: *{avg_kills:.1f}/{avg_deaths:.1f}/{avg_assists:.1f}*\n"
+        f"├ 📊 Avg K/A/D: *{avg_kills:.1f}/{avg_assists:.1f}/{avg_deaths:.1f}*\n"
         f"├ {EMOJI['medal']} MVP: *{player.get('mvp_count', 0)}*\n"
         f"└ {EMOJI['game']} Всего игр: *{total_games}*\n"
     )

@@ -24,6 +24,10 @@ SSL_KEY_PATH = os.getenv("SSL_KEY_PATH", "3face.xyz/newkey.key")
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
 MODERATOR_IDS = [int(id.strip()) for id in os.getenv("MODERATOR_IDS", "").split(",") if id.strip()]
 
+# ID администратора для получения AI отчётов о проверке матчей
+# Если не указан, отчёты будут отправляться всем админам и модераторам
+AI_REPORT_ADMIN_ID = int(os.getenv("AI_REPORT_ADMIN_ID", "0")) or None
+
 # Database
 DATABASE_PATH = "database.db"
 

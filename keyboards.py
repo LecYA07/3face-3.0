@@ -51,6 +51,19 @@ def get_queue_keyboard(game_format: str = "5x5") -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def get_lobby_search_keyboard(lobby_id: int, game_format: str = "5x5") -> InlineKeyboardMarkup:
+    """Клавиатура поиска матча из лобби (с сохранением лобби)"""
+    builder = InlineKeyboardBuilder()
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отменить поиск ({format_data['name']})",
+            callback_data=f"lobby:cancel_search:{lobby_id}"
+        )
+    )
+    return builder.as_markup()
+
+
 def get_game_format_keyboard(action: str = "queue") -> InlineKeyboardMarkup:
     """Клавиатура выбора формата игры (5x5 или 2x2)"""
     builder = InlineKeyboardBuilder()
@@ -400,7 +413,7 @@ def get_mvp_selection_keyboard(match_id: int, players: list) -> InlineKeyboardMa
     builder = InlineKeyboardBuilder()
     
     for player in players:
-        name = player.get('username') or player.get('full_name', 'Игрок')
+        name = player.get('game_nickname') or player.get('username') or player.get('full_name', 'Игрок')
         builder.row(
             InlineKeyboardButton(
                 text=f"{EMOJI['star']} {name}",
@@ -830,6 +843,147 @@ def get_ai_invalid_screenshot_keyboard(verification_id: int, match_id: int, subm
         InlineKeyboardButton(
             text=f"{EMOJI['info']} Детали матча",
             callback_data=f"ai:details:{match_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+# ============ PLAYER SEARCH & STATS EDITING KEYBOARDS ============
+
+def get_player_info_keyboard(user_id: int, is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура информации об игроке (для модераторов/админов)"""
+    builder = InlineKeyboardBuilder()
+    
+    if is_admin:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['gear']} Изменить статистику",
+                callback_data=f"editstats:menu:{user_id}"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['lock']} Забанить",
+                callback_data=f"editstats:ban:{user_id}"
+            ),
+            InlineKeyboardButton(
+                text=f"{EMOJI['unlock']} Разбанить",
+                callback_data=f"editstats:unban:{user_id}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['chart']} История матчей",
+            callback_data=f"editstats:history:{user_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="search:player"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_edit_stats_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура выбора параметра для редактирования"""
+    builder = InlineKeyboardBuilder()
+    
+    stats = [
+        ("📊 Рейтинг", "rating"),
+        ("🏆 Победы", "wins"),
+        ("❌ Поражения", "losses"),
+        ("⚔️ Убийства", "kills"),
+        ("💀 Смерти", "deaths"),
+        ("🤝 Ассисты", "assists"),
+        ("⭐ MVP", "mvp_count"),
+        ("🔥 Винстрик", "win_streak"),
+    ]
+    
+    for label, stat in stats:
+        builder.row(
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"editstats:set:{user_id}:{stat}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Сбросить всю статистику",
+            callback_data=f"editstats:reset:{user_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=f"editstats:back:{user_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_confirm_reset_stats_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Подтверждение сброса статистики"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['check']} Да, сбросить",
+            callback_data=f"editstats:confirm_reset:{user_id}"
+        ),
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отмена",
+            callback_data=f"editstats:menu:{user_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_cancel_input_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Кнопка отмены при вводе значения"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отмена",
+            callback_data=f"editstats:menu:{user_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_search_results_keyboard(users: list, query: str) -> InlineKeyboardMarkup:
+    """Клавиатура с результатами поиска игроков"""
+    builder = InlineKeyboardBuilder()
+    
+    for user in users[:10]:  # Максимум 10 результатов
+        name = user.get('game_nickname') or user.get('username') or f"ID:{user['user_id']}"
+        rating = user.get('rating', 1000)
+        builder.row(
+            InlineKeyboardButton(
+                text=f"👤 {name} [{rating}]",
+                callback_data=f"search:select:{user['user_id']}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="🔍 Новый поиск",
+            callback_data="search:player"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ В админ-панель",
+            callback_data="search:back_admin"
         )
     )
     
