@@ -819,87 +819,140 @@ async def backup_database(message: Message):
 
 # ============ UPDATE COMMAND ============
 
+# URL для скачивания архива с GitHub
+GITHUB_REPO = "LecYA07/3face-3.0"
+GITHUB_BRANCH = "main"
+
+# Файлы и папки которые нужно сохранить при обновлении
+PRESERVE_FILES = [".env", "database.db", "backups"]
+# Файлы и папки которые НЕ нужно копировать из архива
+SKIP_FILES = [".env.example", ".git", ".gitignore", "__pycache__"]
+
+
 @router.message(F.text.startswith("/update"))
 async def update_bot_command(message: Message):
-    """Обновить бота с GitHub с сохранением БД и конфигов"""
+    """Обновить бота с GitHub с сохранением БД и конфигов (без git)"""
     if not await is_admin(message.from_user.id):
         await message.answer(f"{EMOJI['lock']} Только для администраторов!")
         return
     
-    import subprocess
+    import aiohttp
+    import zipfile
+    import io
     import sys
     
     await message.answer(
         f"{EMOJI['gear']} *Начинаю обновление бота...*\n\n"
-        f"1️⃣ Создание бэкапа базы данных...",
+        f"1️⃣ Создание бэкапа...",
         parse_mode="Markdown"
     )
     
     try:
-        # 1. Создаём бэкап базы данных
+        # 1. Создаём папку для бэкапов
         backup_dir = "backups"
         if not os.path.exists(backup_dir):
             os.makedirs(backup_dir)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Бэкап базы данных
         backup_filename = f"backup_before_update_{timestamp}.db"
         backup_path = os.path.join(backup_dir, backup_filename)
-        shutil.copy2(DATABASE_PATH, backup_path)
+        if os.path.exists(DATABASE_PATH):
+            shutil.copy2(DATABASE_PATH, backup_path)
         
-        # Сохраняем .env если есть
+        # Сохраняем .env
         env_backup = None
         if os.path.exists(".env"):
             with open(".env", "r", encoding="utf-8") as f:
                 env_backup = f.read()
         
         await message.answer(
-            f"{EMOJI['check']} Бэкап БД создан: {backup_filename}\n\n"
-            f"2️⃣ Получение обновлений с GitHub...",
+            f"{EMOJI['check']} Бэкап создан\n\n"
+            f"2️⃣ Скачивание обновлений с GitHub...",
             parse_mode="Markdown"
         )
         
-        # 2. Git pull
-        git_result = subprocess.run(
-            ["git", "pull", "origin", "main"],
-            capture_output=True,
-            text=True,
-            cwd=os.getcwd()
+        # 2. Скачиваем архив с GitHub
+        download_url = f"https://github.com/{GITHUB_REPO}/archive/refs/heads/{GITHUB_BRANCH}.zip"
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.get(download_url) as response:
+                if response.status != 200:
+                    await message.answer(
+                        f"{EMOJI['warning']} Ошибка скачивания: HTTP {response.status}",
+                        parse_mode="Markdown"
+                    )
+                    return
+                
+                zip_data = await response.read()
+        
+        await message.answer(
+            f"{EMOJI['check']} Архив скачан ({len(zip_data) // 1024} КБ)\n\n"
+            f"3️⃣ Распаковка и обновление файлов...",
+            parse_mode="Markdown"
         )
         
-        git_output = git_result.stdout + git_result.stderr
+        # 3. Распаковываем архив
+        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+            # Получаем имя корневой папки в архиве (обычно repo-branch)
+            root_folder = zf.namelist()[0].split('/')[0]
+            
+            updated_files = []
+            skipped_files = []
+            
+            for file_info in zf.infolist():
+                # Пропускаем директории
+                if file_info.is_dir():
+                    continue
+                
+                # Получаем относительный путь (без корневой папки архива)
+                relative_path = file_info.filename.replace(f"{root_folder}/", "", 1)
+                
+                if not relative_path:
+                    continue
+                
+                # Пропускаем файлы из списка SKIP и сохраняемые файлы
+                skip = False
+                for skip_pattern in SKIP_FILES + PRESERVE_FILES:
+                    if relative_path.startswith(skip_pattern) or relative_path == skip_pattern:
+                        skip = True
+                        skipped_files.append(relative_path)
+                        break
+                
+                if skip:
+                    continue
+                
+                # Создаём директории если нужно
+                dir_path = os.path.dirname(relative_path)
+                if dir_path and not os.path.exists(dir_path):
+                    os.makedirs(dir_path)
+                
+                # Извлекаем файл
+                with zf.open(file_info) as src:
+                    content = src.read()
+                    with open(relative_path, 'wb') as dst:
+                        dst.write(content)
+                
+                updated_files.append(relative_path)
         
-        if git_result.returncode != 0:
-            # Пробуем с --force
-            git_result = subprocess.run(
-                ["git", "fetch", "--all"],
-                capture_output=True,
-                text=True,
-                cwd=os.getcwd()
-            )
-            git_result = subprocess.run(
-                ["git", "reset", "--hard", "origin/main"],
-                capture_output=True,
-                text=True,
-                cwd=os.getcwd()
-            )
-            git_output = git_result.stdout + git_result.stderr
-        
-        # 3. Восстанавливаем .env если был
+        # 4. Восстанавливаем .env
         if env_backup:
             with open(".env", "w", encoding="utf-8") as f:
                 f.write(env_backup)
         
-        # 4. Восстанавливаем БД
+        # 5. Восстанавливаем БД
         if os.path.exists(backup_path):
             shutil.copy2(backup_path, DATABASE_PATH)
         
         await message.answer(
-            f"{EMOJI['check']} Git обновлён\n\n"
-            f"3️⃣ Установка зависимостей...",
+            f"{EMOJI['check']} Файлы обновлены\n\n"
+            f"4️⃣ Установка зависимостей...",
             parse_mode="Markdown"
         )
         
-        # 5. Устанавливаем зависимости
+        # 6. Устанавливаем зависимости
+        import subprocess
         pip_result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
             capture_output=True,
@@ -907,22 +960,33 @@ async def update_bot_command(message: Message):
             cwd=os.getcwd()
         )
         
-        # Определяем что изменилось
-        changes = "Нет изменений" if "Already up to date" in git_output else "Обновлено"
+        # Формируем отчёт
+        files_summary = f"Обновлено файлов: {len(updated_files)}"
+        if len(updated_files) <= 10:
+            files_list = "\n".join([f"  • {f}" for f in updated_files[:10]])
+        else:
+            files_list = "\n".join([f"  • {f}" for f in updated_files[:10]]) + f"\n  ... и ещё {len(updated_files) - 10}"
         
         await message.answer(
             f"{EMOJI['check']} *Обновление завершено!*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📦 Git: {changes}\n"
+            f"📦 {files_summary}\n"
             f"💾 БД сохранена: {backup_filename}\n"
-            f"⚙️ Конфиги сохранены\n"
+            f"⚙️ .env сохранён\n"
             f"📚 Зависимости обновлены\n\n"
+            f"📝 *Обновлённые файлы:*\n{files_list}\n\n"
             f"{EMOJI['warning']} *Для применения изменений требуется перезапуск!*\n\n"
-            f"Используйте /restart для перезапуска бота\n"
-            f"или перезапустите контейнер вручную.",
+            f"Используйте /restart для перезапуска бота.",
             parse_mode="Markdown"
         )
         
+    except aiohttp.ClientError as e:
+        await message.answer(
+            f"{EMOJI['warning']} *Ошибка сети!*\n\n"
+            f"Не удалось скачать обновления: {str(e)}\n\n"
+            f"Проверьте подключение к интернету.",
+            parse_mode="Markdown"
+        )
     except Exception as e:
         await message.answer(
             f"{EMOJI['warning']} *Ошибка обновления!*\n\n"
@@ -954,76 +1018,46 @@ async def restart_bot_command(message: Message):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
-@router.message(F.text.startswith("/gitlog"))
-async def git_log_command(message: Message):
-    """Показать последние коммиты"""
+@router.message(F.text.startswith("/version"))
+async def version_command(message: Message):
+    """Показать текущую версию бота"""
     if not await is_admin(message.from_user.id):
         await message.answer(f"{EMOJI['lock']} Только для администраторов!")
         return
     
-    import subprocess
+    import aiohttp
     
     try:
-        result = subprocess.run(
-            ["git", "log", "--oneline", "-10"],
-            capture_output=True,
-            text=True,
-            cwd=os.getcwd()
-        )
+        # Получаем информацию о последнем коммите с GitHub API
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits/{GITHUB_BRANCH}"
         
-        if result.returncode == 0:
-            log_output = result.stdout.strip()
-            await message.answer(
-                f"{EMOJI['info']} *Последние 10 коммитов:*\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"```\n{log_output}\n```",
-                parse_mode="Markdown"
-            )
-        else:
-            await message.answer(
-                f"{EMOJI['warning']} Ошибка: {result.stderr}",
-                parse_mode="Markdown"
-            )
-    except Exception as e:
-        await message.answer(
-            f"{EMOJI['warning']} Ошибка: {str(e)}"
-        )
-
-
-@router.message(F.text.startswith("/gitstatus"))
-async def git_status_command(message: Message):
-    """Показать статус Git"""
-    if not await is_admin(message.from_user.id):
-        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
-        return
-    
-    import subprocess
-    
-    try:
-        result = subprocess.run(
-            ["git", "status", "--short"],
-            capture_output=True,
-            text=True,
-            cwd=os.getcwd()
-        )
-        
-        branch_result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            cwd=os.getcwd()
-        )
-        
-        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
-        status = result.stdout.strip() if result.stdout.strip() else "Нет изменений"
-        
-        await message.answer(
-            f"{EMOJI['info']} *Git Status*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🌿 Ветка: {branch}\n\n"
-            f"📝 Изменения:\n```\n{status}\n```",
-            parse_mode="Markdown"
-        )
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    commit_sha = data['sha'][:7]
+                    commit_msg = data['commit']['message'].split('\n')[0][:50]
+                    commit_date = data['commit']['committer']['date'][:10]
+                    author = data['commit']['author']['name']
+                    
+                    await message.answer(
+                        f"{EMOJI['info']} *Информация о репозитории*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"📦 Репозиторий: {GITHUB_REPO}\n"
+                        f"🌿 Ветка: {GITHUB_BRANCH}\n\n"
+                        f"📝 *Последний коммит:*\n"
+                        f"  • SHA: `{commit_sha}`\n"
+                        f"  • Дата: {commit_date}\n"
+                        f"  • Автор: {author}\n"
+                        f"  • Сообщение: {commit_msg}",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await message.answer(
+                        f"{EMOJI['warning']} Не удалось получить информацию о версии.\n"
+                        f"HTTP статус: {response.status}",
+                        parse_mode="Markdown"
+                    )
     except Exception as e:
         await message.answer(
             f"{EMOJI['warning']} Ошибка: {str(e)}"
