@@ -129,3 +129,10 @@ tmp/
 temp/
 
 config.py
+
+# JavaScript / Node.js (чтобы хостинг не определял проект как Node.js)
+*.js
+node_modules/
+package.json
+package-lock.json
+yarn.lock
