@@ -1253,6 +1253,25 @@ async def is_user_in_active_or_pending_match(user_id: int) -> bool:
             return await cursor.fetchone() is not None
 
 
+async def is_user_in_pending_match(user_id: int) -> bool:
+    """Проверить, участвует ли пользователь только в pending матче (ready check)"""
+    from config import READY_CHECK_TIMEOUT
+    
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Проверяем только pending матчи, которые не просрочены
+        query = """
+            SELECT 1 FROM matches m
+            JOIN match_players mp ON m.match_id = mp.match_id
+            WHERE mp.user_id = ? 
+            AND m.status = 'pending' 
+            AND datetime(m.created_at, '+' || ? || ' seconds') > datetime('now')
+            LIMIT 1
+        """
+        timeout_with_buffer = READY_CHECK_TIMEOUT + 60
+        async with db.execute(query, (user_id, timeout_with_buffer)) as cursor:
+            return await cursor.fetchone() is not None
+
+
 async def cleanup_stale_ready_checks(timeout_seconds: int = 120) -> List[int]:
     """
     Очистить зависшие ready checks (матчи в статусе pending дольше timeout).

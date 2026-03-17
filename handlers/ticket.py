@@ -723,14 +723,81 @@ async def start_user_reply(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(TicketStates.waiting_for_user_reply)
-async def process_user_reply(message: Message, state: FSMContext):
-    """Обработка ответа от пользователя"""
-    reply_text = message.text.strip() if message.text else ""
-    photo_file_id = message.photo[-1].file_id if message.photo else None
+@router.message(TicketStates.waiting_for_user_reply, F.photo)
+async def process_user_reply_photo(message: Message, state: FSMContext):
+    """Обработка фото от пользователя в ответе на тикет"""
+    photo_file_id = message.photo[-1].file_id
+    reply_text = message.caption.strip() if message.caption else ""
     
-    if message.photo and message.caption:
-        reply_text = message.caption.strip()
+    if len(reply_text) < 5:
+        await message.answer(
+            f"{EMOJI['warning']} Добавьте подпись к фото (минимум 5 символов)!",
+            parse_mode="Markdown"
+        )
+        return
+    
+    data = await state.get_data()
+    ticket_id = data.get('user_reply_ticket_id')
+    
+    if not ticket_id:
+        await state.clear()
+        await message.answer(f"{EMOJI['warning']} Ошибка: тикет не найден.")
+        return
+    
+    ticket = await db.get_ticket(ticket_id)
+    if not ticket:
+        await state.clear()
+        await message.answer(f"{EMOJI['warning']} Тикет не найден!")
+        return
+    
+    # Добавляем сообщение в историю
+    await db.add_ticket_message(ticket_id, message.from_user.id, reply_text, is_admin=False, photo_file_id=photo_file_id)
+    
+    # Переоткрываем тикет если он был отвечен
+    if ticket['status'] == 'answered':
+        await db.reopen_ticket(ticket_id)
+    
+    await state.clear()
+    
+    await message.answer(
+        f"{EMOJI['check']} *Сообщение с фото добавлено к тикету #{ticket_id}!*\n\n"
+        f"Модераторы получат уведомление.",
+        parse_mode="Markdown"
+    )
+    
+    # Уведомляем модераторов
+    from config import ADMIN_IDS, MODERATOR_IDS
+    
+    user = await db.get_user(message.from_user.id)
+    user_name = format_player_name(user) if user else f"ID: {message.from_user.id}"
+    
+    notification_text = (
+        f"📩 *НОВОЕ СООБЩЕНИЕ В ТИКЕТЕ #{ticket_id}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 *От:* {user_name}\n"
+        f"📷 *Фото:* прикреплено\n\n"
+        f"💬 *Сообщение:*\n{reply_text[:500]}{'...' if len(reply_text) > 500 else ''}"
+    )
+    
+    admin_ids = set(ADMIN_IDS + MODERATOR_IDS)
+    
+    for admin_id in admin_ids:
+        try:
+            await message.bot.send_photo(
+                admin_id,
+                photo=photo_file_id,
+                caption=notification_text,
+                reply_markup=get_ticket_admin_keyboard(ticket_id, has_photo=True),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify admin {admin_id}: {e}")
+
+
+@router.message(TicketStates.waiting_for_user_reply, F.text)
+async def process_user_reply(message: Message, state: FSMContext):
+    """Обработка текстового ответа от пользователя"""
+    reply_text = message.text.strip()
     
     if len(reply_text) < 5:
         await message.answer(f"{EMOJI['warning']} Сообщение слишком короткое!", parse_mode="Markdown")
@@ -751,7 +818,7 @@ async def process_user_reply(message: Message, state: FSMContext):
         return
     
     # Добавляем сообщение в историю
-    await db.add_ticket_message(ticket_id, message.from_user.id, reply_text, is_admin=False, photo_file_id=photo_file_id)
+    await db.add_ticket_message(ticket_id, message.from_user.id, reply_text, is_admin=False)
     
     # Переоткрываем тикет если он был отвечен
     if ticket['status'] == 'answered':
@@ -785,7 +852,7 @@ async def process_user_reply(message: Message, state: FSMContext):
             await message.bot.send_message(
                 admin_id,
                 notification_text,
-                reply_markup=get_ticket_admin_keyboard(ticket_id, has_photo=bool(photo_file_id)),
+                reply_markup=get_ticket_admin_keyboard(ticket_id, has_photo=False),
                 parse_mode="Markdown"
             )
         except Exception as e:

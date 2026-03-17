@@ -44,18 +44,11 @@ async def find_game_button(message: Message):
         await message.answer(f"{EMOJI['lock']} Вы заблокированы!")
         return
     
-    if await db.is_user_in_active_or_pending_match(message.from_user.id):
-        active_match = await db.get_user_active_match(message.from_user.id)
-        if active_match:
-            team1 = await db.get_match_players(active_match['match_id'], team=1)
-            team2 = await db.get_match_players(active_match['match_id'], team=2)
-            await message.answer(
-                f"{EMOJI['sword']} *У вас есть активный матч!*\n\n" + format_match_info(active_match, team1, team2),
-                reply_markup=get_match_keyboard(active_match['match_id']), parse_mode="Markdown")
-        else:
-            await message.answer(
-                f"{EMOJI['warning']} *У вас есть матч, ожидающий подтверждения!*\n\nПожалуйста, подтвердите готовность.",
-                parse_mode="Markdown")
+    # Проверяем только pending матчи (ready check) - их нельзя пропустить
+    if await db.is_user_in_pending_match(message.from_user.id):
+        await message.answer(
+            f"{EMOJI['warning']} *У вас есть матч, ожидающий подтверждения!*\n\nПожалуйста, подтвердите готовность.",
+            parse_mode="Markdown")
         return
     
     if await db.is_in_queue(message.from_user.id):
@@ -86,8 +79,9 @@ async def select_queue_format(callback: CallbackQuery):
         await callback.answer("Вы заблокированы!", show_alert=True)
         return
     
-    if await db.is_user_in_active_or_pending_match(callback.from_user.id):
-        await callback.answer("У вас есть активный матч!", show_alert=True)
+    # Проверяем только pending матчи (ready check) - их нельзя пропустить
+    if await db.is_user_in_pending_match(callback.from_user.id):
+        await callback.answer("Подтвердите готовность в текущем матче!", show_alert=True)
         return
     
     if await db.is_in_queue(callback.from_user.id):
@@ -117,8 +111,9 @@ async def join_queue_with_format(callback: CallbackQuery):
     if user.get('is_banned'):
         await callback.answer("Вы заблокированы!", show_alert=True)
         return
-    if await db.is_user_in_active_or_pending_match(callback.from_user.id):
-        await callback.answer("У вас есть активный матч!", show_alert=True)
+    # Проверяем только pending матчи (ready check) - их нельзя пропустить
+    if await db.is_user_in_pending_match(callback.from_user.id):
+        await callback.answer("Подтвердите готовность в текущем матче!", show_alert=True)
         return
     if await db.is_in_queue(callback.from_user.id):
         await callback.answer("Вы уже в очереди!", show_alert=True)
@@ -138,7 +133,8 @@ async def join_queue_with_format(callback: CallbackQuery):
         for member in party_members:
             member_user = await db.get_user(member['user_id'])
             if member_user and not member_user.get('is_banned'):
-                if not await db.is_user_in_active_or_pending_match(member['user_id']):
+                # Проверяем только pending матчи для участников пати
+                if not await db.is_user_in_pending_match(member['user_id']):
                     await db.join_queue(member['user_id'], user['platform'], member_user['rating'], party_id, game_format)
     else:
         await db.join_queue(callback.from_user.id, user['platform'], user['rating'], None, game_format)
@@ -189,7 +185,8 @@ async def try_create_match_from_queue(bot: Bot, platform: str, game_format: str 
         if len(queue_players) < match_size:
             return
         
-        valid_players = [p for p in queue_players if not await db.is_user_in_active_or_pending_match(p['user_id'])]
+        # Проверяем только pending матчи - игроки в активных матчах могут искать следующий
+        valid_players = [p for p in queue_players if not await db.is_user_in_pending_match(p['user_id'])]
         if len(valid_players) < match_size:
             return
         
@@ -207,9 +204,10 @@ async def create_match_with_ready_check(bot: Bot, players: list, platform: str, 
     match_size = format_data['match_size']
     team_size = format_data['team_size']
     
+    # Проверяем только pending матчи - игроки в активных матчах могут участвовать в ready check
     for player in players:
-        if await db.is_user_in_active_or_pending_match(player['user_id']):
-            logger.warning(f"Player {player['user_id']} already in match")
+        if await db.is_user_in_pending_match(player['user_id']):
+            logger.warning(f"Player {player['user_id']} already in pending match")
             return
     
     team1, team2 = balance_teams(players, game_format)
