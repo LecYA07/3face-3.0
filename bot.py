@@ -59,11 +59,13 @@ async def main():
     dp = Dispatcher(storage=storage)
     
     # Регистрируем роутеры
+    # ВАЖНО: ticket_router должен быть в начале, чтобы FSM состояния 
+    # (ожидание ответа на тикет) имели приоритет над другими хендлерами
+    dp.include_router(ticket_router)
+    dp.include_router(admin_router)
     dp.include_router(lobby_router)
     dp.include_router(match_router)
-    dp.include_router(admin_router)
     dp.include_router(profile_router)
-    dp.include_router(ticket_router)
     dp.include_router(webapp_router)
     
     # Обработчик команды /start

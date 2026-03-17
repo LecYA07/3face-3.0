@@ -2,6 +2,7 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import StateFilter
 from typing import List, Dict, Any
 import logging
 
@@ -22,7 +23,7 @@ class LobbyStates(StatesGroup):
     in_lobby = State()
 
 
-@router.message(F.text.contains("Лобби"))
+@router.message(F.text.contains("Лобби"), StateFilter(None, LobbyStates.in_lobby))
 async def show_lobbies_menu(message: Message):
     """Показать меню лобби"""
     user = await db.get_user(message.from_user.id)

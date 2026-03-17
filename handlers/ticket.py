@@ -642,7 +642,7 @@ async def start_ticket_reply(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(TicketStates.waiting_for_reply)
+@router.message(TicketStates.waiting_for_reply, F.text)
 async def process_ticket_reply(message: Message, state: FSMContext):
     """Обработка ответа на тикет (модератор)"""
     reply_text = message.text.strip()
