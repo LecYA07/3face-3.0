@@ -4,7 +4,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import shutil
 import os
+import logging
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 import database as db
 from keyboards import (
@@ -839,6 +842,11 @@ PRESERVE_FILES = [".env", "database.db", "backups"]
 SKIP_FILES = [".env.example", ".git", ".gitignore", "__pycache__"]
 
 
+def escape_html(text: str) -> str:
+    """Экранировать HTML-символы"""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 @router.message(F.text.startswith("/update"))
 async def update_bot_command(message: Message):
     """Обновить бота с GitHub с сохранением БД и конфигов (без git)"""
@@ -852,9 +860,9 @@ async def update_bot_command(message: Message):
     import sys
     
     await message.answer(
-        f"{EMOJI['gear']} *Начинаю обновление бота...*\n\n"
+        f"{EMOJI['gear']} <b>Начинаю обновление бота...</b>\n\n"
         f"1️⃣ Создание бэкапа...",
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
     
     try:
@@ -880,7 +888,7 @@ async def update_bot_command(message: Message):
         await message.answer(
             f"{EMOJI['check']} Бэкап создан\n\n"
             f"2️⃣ Скачивание обновлений с GitHub...",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         
         # 2. Скачиваем архив с GitHub
@@ -891,7 +899,7 @@ async def update_bot_command(message: Message):
                 if response.status != 200:
                     await message.answer(
                         f"{EMOJI['warning']} Ошибка скачивания: HTTP {response.status}",
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
                     return
                 
@@ -900,7 +908,7 @@ async def update_bot_command(message: Message):
         await message.answer(
             f"{EMOJI['check']} Архив скачан ({len(zip_data) // 1024} КБ)\n\n"
             f"3️⃣ Распаковка и обновление файлов...",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         
         # 3. Распаковываем архив
@@ -958,7 +966,7 @@ async def update_bot_command(message: Message):
         await message.answer(
             f"{EMOJI['check']} Файлы обновлены\n\n"
             f"4️⃣ Установка зависимостей...",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         
         # 6. Устанавливаем зависимости
@@ -970,39 +978,39 @@ async def update_bot_command(message: Message):
             cwd=os.getcwd()
         )
         
-        # Формируем отчёт
+        # Формируем отчёт с экранированием HTML
         files_summary = f"Обновлено файлов: {len(updated_files)}"
         if len(updated_files) <= 10:
-            files_list = "\n".join([f"  • {f}" for f in updated_files[:10]])
+            files_list = "\n".join([f"  • {escape_html(f)}" for f in updated_files[:10]])
         else:
-            files_list = "\n".join([f"  • {f}" for f in updated_files[:10]]) + f"\n  ... и ещё {len(updated_files) - 10}"
+            files_list = "\n".join([f"  • {escape_html(f)}" for f in updated_files[:10]]) + f"\n  ... и ещё {len(updated_files) - 10}"
         
         await message.answer(
-            f"{EMOJI['check']} *Обновление завершено!*\n"
+            f"{EMOJI['check']} <b>Обновление завершено!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📦 {files_summary}\n"
-            f"💾 БД сохранена: {backup_filename}\n"
+            f"💾 БД сохранена: {escape_html(backup_filename)}\n"
             f"⚙️ .env сохранён\n"
             f"📚 Зависимости обновлены\n\n"
-            f"📝 *Обновлённые файлы:*\n{files_list}\n\n"
-            f"{EMOJI['warning']} *Для применения изменений требуется перезапуск!*\n\n"
+            f"📝 <b>Обновлённые файлы:</b>\n{files_list}\n\n"
+            f"{EMOJI['warning']} <b>Для применения изменений требуется перезапуск!</b>\n\n"
             f"Используйте /restart для перезапуска бота.",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
         
     except aiohttp.ClientError as e:
         await message.answer(
-            f"{EMOJI['warning']} *Ошибка сети!*\n\n"
-            f"Не удалось скачать обновления: {str(e)}\n\n"
+            f"{EMOJI['warning']} <b>Ошибка сети!</b>\n\n"
+            f"Не удалось скачать обновления: {escape_html(str(e))}\n\n"
             f"Проверьте подключение к интернету.",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
     except Exception as e:
         await message.answer(
-            f"{EMOJI['warning']} *Ошибка обновления!*\n\n"
-            f"Причина: {str(e)}\n\n"
+            f"{EMOJI['warning']} <b>Ошибка обновления!</b>\n\n"
+            f"Причина: {escape_html(str(e))}\n\n"
             f"База данных и конфиги сохранены в папке backups/",
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
 
