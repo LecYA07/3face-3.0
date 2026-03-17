@@ -122,9 +122,9 @@ def find_best_match_group(queue_players: List[Dict[str, Any]],
     from config import GAME_FORMATS
     
     format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
-    lobby_size = format_data['lobby_size']
+    match_size = format_data['match_size']  # Используем match_size вместо lobby_size
     
-    if len(queue_players) < lobby_size:
+    if len(queue_players) < match_size:
         return []
     
     parties = {}
@@ -143,17 +143,17 @@ def find_best_match_group(queue_players: List[Dict[str, Any]],
     selected = []
     
     for party_players in parties.values():
-        if len(selected) + len(party_players) <= lobby_size:
+        if len(selected) + len(party_players) <= match_size:
             selected.extend(party_players)
     
-    remaining_slots = lobby_size - len(selected)
+    remaining_slots = match_size - len(selected)
     if remaining_slots > 0 and len(solo_players) >= remaining_slots:
         if selected:
             avg_rating = sum(p.get('rating', 1000) for p in selected) // len(selected)
             solo_players.sort(key=lambda p: abs(p.get('rating', 1000) - avg_rating))
         selected.extend(solo_players[:remaining_slots])
     
-    if len(selected) == lobby_size:
+    if len(selected) == match_size:
         ratings = [p.get('rating', 1000) for p in selected]
         if max(ratings) - min(ratings) <= max_rating_diff:
             return selected
@@ -524,7 +524,7 @@ def format_queue_status(queue_count: int, platform: str, game_format: str = "5x5
     from config import PLATFORMS, GAME_FORMATS
     platform_name = PLATFORMS.get(platform, platform)
     format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
-    lobby_size = format_data['lobby_size']
+    match_size = format_data['match_size']  # Используем match_size вместо lobby_size
     
     return (
         f"\n{EMOJI['search']} *ПОИСК ИГРЫ*\n"
@@ -532,6 +532,6 @@ def format_queue_status(queue_count: int, platform: str, game_format: str = "5x5
         f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"{EMOJI['queue']} В очереди: *{queue_count}* игроков\n"
         f"{platform_name}\n\n"
-        f"{EMOJI['info']} Для матча нужно *{lobby_size}* игроков\n"
+        f"{EMOJI['info']} Для матча нужно *{match_size}* игроков\n"
         f"{EMOJI['clock']} Подбор по рейтингу...\n"
     )

@@ -285,6 +285,16 @@ def get_profile_keyboard(user_id: int) -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(
+            text="🎮 Изменить ник",
+            callback_data=f"profile:nickname:{user_id}"
+        ),
+        InlineKeyboardButton(
+            text="🆔 Изменить ID",
+            callback_data=f"profile:gameid:{user_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
             text=f"{EMOJI['gear']} Сменить платформу",
             callback_data=f"profile:platform:{user_id}"
         )

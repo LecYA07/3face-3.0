@@ -1,5 +1,7 @@
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 import database as db
 from keyboards import get_profile_keyboard, get_platform_keyboard, get_top_players_keyboard
@@ -10,6 +12,11 @@ from utils import (
 from config import EMOJI, PLATFORMS
 
 router = Router()
+
+
+class ProfileStates(StatesGroup):
+    waiting_for_nickname = State()
+    waiting_for_game_id = State()
 
 
 @router.message(F.text.contains("Профиль"))
@@ -65,6 +72,104 @@ async def show_match_history(callback: CallbackQuery):
     
     await callback.message.answer(text, parse_mode="Markdown")
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("profile:nickname:"))
+async def change_nickname_prompt(callback: CallbackQuery, state: FSMContext):
+    """Запросить новый игровой ник"""
+    user_id = int(callback.data.split(":")[2])
+    
+    if callback.from_user.id != user_id:
+        await callback.answer("Вы не можете изменить чужой профиль!", show_alert=True)
+        return
+    
+    await state.set_state(ProfileStates.waiting_for_nickname)
+    
+    await callback.message.answer(
+        f"🎮 *Изменение игрового ника*\n\n"
+        f"Отправьте ваш новый игровой ник:\n\n"
+        f"{EMOJI['info']} Это имя будет отображаться в матчах и лобби.",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(ProfileStates.waiting_for_nickname)
+async def process_new_nickname(message: Message, state: FSMContext):
+    """Обработать новый ник"""
+    new_nickname = message.text.strip()
+    
+    if len(new_nickname) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} Ник слишком короткий! Минимум 2 символа.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if len(new_nickname) > 32:
+        await message.answer(
+            f"{EMOJI['warning']} Ник слишком длинный! Максимум 32 символа.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    await db.update_user_game_nickname(message.from_user.id, new_nickname)
+    await state.clear()
+    
+    await message.answer(
+        f"{EMOJI['check']} *Ник успешно изменён!*\n\n"
+        f"Ваш новый игровой ник: *{new_nickname}*",
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("profile:gameid:"))
+async def change_game_id_prompt(callback: CallbackQuery, state: FSMContext):
+    """Запросить новый игровой ID"""
+    user_id = int(callback.data.split(":")[2])
+    
+    if callback.from_user.id != user_id:
+        await callback.answer("Вы не можете изменить чужой профиль!", show_alert=True)
+        return
+    
+    await state.set_state(ProfileStates.waiting_for_game_id)
+    
+    await callback.message.answer(
+        f"🆔 *Изменение игрового ID*\n\n"
+        f"Отправьте ваш новый игровой ID:\n\n"
+        f"{EMOJI['info']} Это ID используется для приглашения в игру (например: #ABC123).",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(ProfileStates.waiting_for_game_id)
+async def process_new_game_id(message: Message, state: FSMContext):
+    """Обработать новый игровой ID"""
+    new_game_id = message.text.strip()
+    
+    if len(new_game_id) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} ID слишком короткий! Минимум 2 символа.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if len(new_game_id) > 32:
+        await message.answer(
+            f"{EMOJI['warning']} ID слишком длинный! Максимум 32 символа.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    await db.update_user_game_id(message.from_user.id, new_game_id)
+    await state.clear()
+    
+    await message.answer(
+        f"{EMOJI['check']} *Игровой ID успешно изменён!*\n\n"
+        f"Ваш новый игровой ID: `{new_game_id}`",
+        parse_mode="Markdown"
+    )
 
 
 @router.callback_query(F.data.startswith("profile:platform:"))

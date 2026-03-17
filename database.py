@@ -244,6 +244,24 @@ async def update_user_game_info(user_id: int, game_nickname: str, game_id: str) 
         await db.commit()
 
 
+async def update_user_game_nickname(user_id: int, game_nickname: str) -> None:
+    """Обновить только игровой ник пользователя"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            UPDATE users SET game_nickname = ? WHERE user_id = ?
+        """, (game_nickname, user_id))
+        await db.commit()
+
+
+async def update_user_game_id(user_id: int, game_id: str) -> None:
+    """Обновить только игровой ID пользователя"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            UPDATE users SET game_id = ? WHERE user_id = ?
+        """, (game_id, user_id))
+        await db.commit()
+
+
 async def is_user_registered(user_id: int) -> bool:
     """Проверить, завершил ли пользователь регистрацию"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
