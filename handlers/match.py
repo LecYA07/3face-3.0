@@ -684,7 +684,7 @@ async def notify_admins_manual_check(bot, submission_id: int, match_id: int, err
             logger.warning(f"Failed to notify admin {admin['user_id']}: {e}")
 
 
-@router.message(MatchStates.waiting_for_screenshot)
+@router.message(MatchStates.waiting_for_screenshot, ~F.photo)
 async def invalid_screenshot(message: Message):
     await message.answer(f"{EMOJI['warning']} Пожалуйста, отправьте *фотографию* результатов матча.", parse_mode="Markdown")
 

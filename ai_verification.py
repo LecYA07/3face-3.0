@@ -228,19 +228,30 @@ async def download_and_encode_photo(bot, file_id: str) -> Optional[str]:
         Base64 строка или None при ошибке
     """
     try:
+        # Получаем информацию о файле
         file = await bot.get_file(file_id)
+        
+        # В aiogram 3.x download_file возвращает BytesIO
         file_data = await bot.download_file(file.file_path)
         
         # Читаем данные в bytes
-        image_bytes = file_data.read()
+        # file_data уже является BytesIO объектом
+        if hasattr(file_data, 'read'):
+            image_bytes = file_data.read()
+        elif hasattr(file_data, 'getvalue'):
+            image_bytes = file_data.getvalue()
+        else:
+            # Если это уже bytes
+            image_bytes = file_data
         
         # Конвертируем в base64
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
+        logger.info(f"Successfully downloaded and encoded photo: {len(image_bytes)} bytes")
         return image_base64
         
     except Exception as e:
-        logger.error(f"Failed to download and encode photo: {e}")
+        logger.error(f"Failed to download and encode photo: {e}", exc_info=True)
         return None
 
 
