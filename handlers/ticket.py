@@ -11,7 +11,7 @@ from keyboards import (
     get_ticket_admin_keyboard, get_main_menu_keyboard
 )
 from utils import format_player_name
-from config import EMOJI
+from config import EMOJI, ADMIN_IDS
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -141,7 +141,7 @@ async def process_ticket_photo(message: Message, state: FSMContext):
         f"📝 *Сообщение:*\n{ticket_text[:200]}{'...' if len(ticket_text) > 200 else ''}\n\n"
         f"{EMOJI['clock']} Ожидайте ответа от администрации.\n"
         f"Вам придёт уведомление, когда на тикет ответят.",
-        reply_markup=get_main_menu_keyboard(),
+        reply_markup=get_main_menu_keyboard(is_admin=message.from_user.id in ADMIN_IDS),
         parse_mode="Markdown"
     )
     
@@ -191,7 +191,7 @@ async def process_ticket_message(message: Message, state: FSMContext):
         f"📝 *Сообщение:*\n{ticket_text[:200]}{'...' if len(ticket_text) > 200 else ''}\n\n"
         f"{EMOJI['clock']} Ожидайте ответа от администрации.\n"
         f"Вам придёт уведомление, когда на тикет ответят.",
-        reply_markup=get_main_menu_keyboard(),
+        reply_markup=get_main_menu_keyboard(is_admin=message.from_user.id in ADMIN_IDS),
         parse_mode="Markdown"
     )
     

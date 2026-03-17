@@ -6,6 +6,13 @@ load_dotenv()
 # Bot Token
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# WebApp Settings
+WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
+WEBAPP_PORT = int(os.getenv("WEBAPP_PORT", "443"))
+WEBAPP_URL = os.getenv("WEBAPP_URL", "https://3face.xyz")
+SSL_CERT_PATH = os.getenv("SSL_CERT_PATH", "3face.xyz/certificate.crt")
+SSL_KEY_PATH = os.getenv("SSL_KEY_PATH", "3face.xyz/newkey.key")
+
 # Admin and Moderator IDs (загружаются из .env, но могут управляться через команды)
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
 MODERATOR_IDS = [int(id.strip()) for id in os.getenv("MODERATOR_IDS", "").split(",") if id.strip()]

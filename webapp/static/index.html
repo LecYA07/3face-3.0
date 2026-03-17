@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3FACE</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect fill='%235a189a' rx='20' width='100' height='100'/%3E%3Ctext x='50' y='68' font-size='50' font-weight='bold' fill='white' text-anchor='middle'%3E3F%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-title">
+                <div class="logo">3F</div>
+                <h1>3FACE</h1>
+            </div>
+            <div class="user-rating" id="userRating">
+                <span class="rating-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" fill="currentColor"/>
+                    </svg>
+                </span>
+                <span id="ratingValue">---</span>
+            </div>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-tab="matches">
+                <span class="tab-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M6 6L18 18M6 18L18 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                        <circle cx="6" cy="6" r="2" fill="currentColor"/>
+                        <circle cx="18" cy="6" r="2" fill="currentColor"/>
+                        <circle cx="6" cy="18" r="2" fill="currentColor"/>
+                        <circle cx="18" cy="18" r="2" fill="currentColor"/>
+                    </svg>
+                </span>
+                <span class="tab-text">Матчи</span>
+            </button>
+            <button class="nav-tab" data-tab="support">
+                <span class="tab-icon">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M21 11.5C21 16.75 16.75 21 11.5 21C6.25 21 2 16.75 2 11.5C2 6.25 6.25 2 11.5 2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M22 22L20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M15 9.5C15 9.5 15.5 8 17 8C18.5 8 19.5 9 19.5 10.5C19.5 11.5 19 12 18 12.5C17 13 17 13.5 17 14.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="17" cy="17" r="1" fill="currentColor"/>
+                    </svg>
+                </span>
+                <span class="tab-text">Поддержка</span>
+            </button>
+        </nav>
+
+        <!-- Content -->
+        <main class="content">
+            <!-- Matches Tab -->
+            <section id="matches-tab" class="tab-content active">
+                <div class="section-header">
+                    <h2>История матчей</h2>
+                </div>
+                <div id="matchesList" class="matches-list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+                <button id="loadMoreMatches" class="btn-secondary load-more" style="display: none;">
+                    Загрузить ещё
+                </button>
+            </section>
+
+            <!-- Support Tab -->
+            <section id="support-tab" class="tab-content">
+                <div class="section-header">
+                    <h2>Техподдержка</h2>
+                    <button id="newTicketBtn" class="btn-primary btn-small">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                        </svg>
+                        Новый тикет
+                    </button>
+                </div>
+                <div id="ticketsList" class="tickets-list">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </section>
+        </main>
+
+        <!-- New Ticket Modal -->
+        <div id="newTicketModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M22 6L12 13L2 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                        Новый тикет
+                    </h3>
+                    <button class="modal-close" id="closeModal">&times;</button>
+                </div>
+                <form id="ticketForm">
+                    <div class="form-group">
+                        <label>Тип обращения</label>
+                        <select name="type" required>
+                            <option value="question">Вопрос</option>
+                            <option value="report">Жалоба на игрока</option>
+                            <option value="bug">Баг / Ошибка</option>
+                            <option value="suggestion">Предложение</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Сообщение</label>
+                        <textarea name="message" rows="5" required 
+                            placeholder="Опишите вашу проблему подробно (мин. 10 символов)..."
+                            minlength="10" maxlength="2000"></textarea>
+                        <div class="char-count"><span id="charCount">0</span> / 2000</div>
+                    </div>
+                    <button type="submit" class="btn-primary btn-full">Отправить</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Match Details Modal -->
+        <div id="matchModal" class="modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h3 id="matchModalTitle">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M6 6L18 18M6 18L18 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+                            <circle cx="6" cy="6" r="2" fill="currentColor"/>
+                            <circle cx="18" cy="6" r="2" fill="currentColor"/>
+                            <circle cx="6" cy="18" r="2" fill="currentColor"/>
+                            <circle cx="18" cy="18" r="2" fill="currentColor"/>
+                        </svg>
+                        <span class="match-modal-title-text">Матч #---</span>
+                    </h3>
+                    <button class="modal-close" id="closeMatchModal">&times;</button>
+                </div>
+                <div id="matchDetails" class="match-details">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ticket Details Modal -->
+        <div id="ticketModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="ticketModalTitle">
+                        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                            <path d="M22 6L12 13L2 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                        <span class="ticket-modal-title-text">Тикет #---</span>
+                    </h3>
+                    <button class="modal-close" id="closeTicketModal">&times;</button>
+                </div>
+                <div id="ticketDetails" class="ticket-details">
+                    <div class="loading">Загрузка...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

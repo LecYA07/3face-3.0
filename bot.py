@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
@@ -7,7 +8,10 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import BOT_TOKEN, EMOJI
+from config import (
+    BOT_TOKEN, EMOJI, WEBAPP_HOST, WEBAPP_PORT, 
+    SSL_CERT_PATH, SSL_KEY_PATH, DATABASE_PATH, ADMIN_IDS
+)
 from database import (
     init_db, create_user, get_user, join_lobby, get_lobby, 
     join_party, get_party, get_party_members, update_user_game_info, is_user_registered
@@ -21,6 +25,7 @@ from handlers.match import router as match_router
 from handlers.admin import router as admin_router
 from handlers.profile import router as profile_router
 from handlers.ticket import router as ticket_router
+from handlers.webapp import router as webapp_router
 
 # Настройка логирования
 logging.basicConfig(
@@ -59,6 +64,7 @@ async def main():
     dp.include_router(admin_router)
     dp.include_router(profile_router)
     dp.include_router(ticket_router)
+    dp.include_router(webapp_router)
     
     # Обработчик команды /start
     @dp.message(CommandStart())
@@ -110,7 +116,7 @@ async def main():
                             )
                             await message.answer(
                                 "Используйте меню для навигации:",
-                                reply_markup=get_main_menu_keyboard()
+                                reply_markup=get_main_menu_keyboard(is_admin=user_id in ADMIN_IDS)
                             )
                             return
                         else:
@@ -152,7 +158,7 @@ async def main():
                         )
                         await message.answer(
                             "Используйте меню для навигации:",
-                            reply_markup=get_main_menu_keyboard()
+                            reply_markup=get_main_menu_keyboard(is_admin=user_id in ADMIN_IDS)
                         )
                         return
                     else:
@@ -170,7 +176,7 @@ async def main():
         
         await message.answer(
             format_welcome_message(full_name),
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=get_main_menu_keyboard(is_admin=user_id in ADMIN_IDS),
             parse_mode="Markdown"
         )
     
@@ -253,7 +259,7 @@ async def main():
             f"{EMOJI['user']} Ник: *{game_nickname}*\n"
             f"{EMOJI['target']} ID: *{game_id}*\n\n"
             f"Теперь вы можете начать играть!",
-            reply_markup=get_main_menu_keyboard(),
+            reply_markup=get_main_menu_keyboard(is_admin=message.from_user.id in ADMIN_IDS),
             parse_mode="Markdown"
         )
         
@@ -349,7 +355,7 @@ async def main():
         if not user:
             await message.answer(
                 f"{EMOJI['warning']} Сначала зарегистрируйтесь командой /start",
-                reply_markup=get_main_menu_keyboard()
+                reply_markup=get_main_menu_keyboard(is_admin=message.from_user.id in ADMIN_IDS)
             )
             return
         
@@ -360,11 +366,30 @@ async def main():
         
         await message.answer(
             f"{EMOJI['info']} Используйте кнопки меню для навигации.",
-            reply_markup=get_main_menu_keyboard()
+            reply_markup=get_main_menu_keyboard(is_admin=message.from_user.id in ADMIN_IDS)
         )
     
     # Регистрируем fallback роутер ПОСЛЕДНИМ
     dp.include_router(fallback_router)
+    
+    # Запускаем веб-приложение Mini App
+    webapp_runner = None
+    if os.path.exists(SSL_CERT_PATH) and os.path.exists(SSL_KEY_PATH):
+        try:
+            from webapp.server import run_webapp
+            webapp_runner = await run_webapp(
+                bot_token=BOT_TOKEN,
+                host=WEBAPP_HOST,
+                port=WEBAPP_PORT,
+                cert_path=SSL_CERT_PATH,
+                key_path=SSL_KEY_PATH,
+                db_path=DATABASE_PATH
+            )
+            logger.info(f"Mini App сервер запущен на порту {WEBAPP_PORT}")
+        except Exception as e:
+            logger.warning(f"Не удалось запустить Mini App сервер: {e}")
+    else:
+        logger.warning("SSL сертификаты не найдены. Mini App сервер не запущен.")
     
     # Запускаем бота
     logger.info("Бот запускается...")
@@ -372,6 +397,8 @@ async def main():
     try:
         await dp.start_polling(bot)
     finally:
+        if webapp_runner:
+            await webapp_runner.cleanup()
         await bot.session.close()
 
 

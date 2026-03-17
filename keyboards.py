@@ -1,9 +1,12 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton, 
+    ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from config import EMOJI, MAPS, PLATFORMS
+from config import EMOJI, MAPS, PLATFORMS, WEBAPP_URL
 
 
-def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
+def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     """Главное меню"""
     builder = ReplyKeyboardBuilder()
     builder.row(
@@ -18,6 +21,10 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
         KeyboardButton(text=f"{EMOJI['info']} Правила"),
         KeyboardButton(text="📩 Тикет")
     )
+    if is_admin:
+        builder.row(
+            KeyboardButton(text="📱 Приложение", web_app=WebAppInfo(url=WEBAPP_URL))
+        )
     return builder.as_markup(resize_keyboard=True)
 
 
