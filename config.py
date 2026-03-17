@@ -21,9 +21,20 @@ MODERATOR_IDS = [int(id.strip()) for id in os.getenv("MODERATOR_IDS", "").split(
 DATABASE_PATH = "database.db"
 
 # Game Settings
-LOBBY_SIZE = 10  # Размер лобби для матча (10 игроков для 5x5)
-TEAM_SIZE = 5    # Размер команды
+LOBBY_SIZE = 5   # Размер лобби (одна команда) для 5x5
+TEAM_SIZE = 5    # Размер команды для 5x5
 MAX_PARTY_SIZE = 5  # Максимальный размер пати
+
+# Game Formats (режимы игры)
+# lobby_size - максимальное количество игроков в одном лобби (одна команда!)
+#              Для 5x5 = 5 человек, для 2x2 = 2 человека
+# team_size - размер команды в матче (равен lobby_size)
+# match_size - общее количество игроков для матча (две команды)
+GAME_FORMATS = {
+    "5x5": {"lobby_size": 5, "team_size": 5, "match_size": 10, "name": "5x5", "emoji": "⚔️"},
+    "2x2": {"lobby_size": 2, "team_size": 2, "match_size": 4, "name": "2x2", "emoji": "🎯"}
+}
+DEFAULT_GAME_FORMAT = "5x5"
 DEFAULT_RATING = 1000  # Начальный рейтинг
 MIN_RATING = 0  # Минимальный рейтинг
 
