@@ -686,3 +686,145 @@ def get_user_ticket_keyboard(ticket_id: int, ticket_status: str) -> InlineKeyboa
     )
     
     return builder.as_markup()
+
+
+# ============ AI VERIFICATION KEYBOARDS ============
+
+def get_ai_verification_keyboard(verification_id: int, match_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для подтверждения/редактирования результатов AI проверки"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['check']} Подтвердить результат",
+            callback_data=f"ai:approve:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['gear']} Редактировать",
+            callback_data=f"ai:edit:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отклонить (ручная проверка)",
+            callback_data=f"ai:reject:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['info']} Детали матча",
+            callback_data=f"ai:details:{match_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_ai_edit_winner_keyboard(verification_id: int, match_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура выбора победителя при редактировании AI результата"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['red']} Команда 1 победила",
+            callback_data=f"ai:set_winner:{verification_id}:{match_id}:1"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['blue']} Команда 2 победила",
+            callback_data=f"ai:set_winner:{verification_id}:{match_id}:2"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=f"ai:back:{verification_id}:{match_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_ai_edit_mvp_keyboard(verification_id: int, match_id: int, players: list) -> InlineKeyboardMarkup:
+    """Клавиатура выбора MVP при редактировании AI результата"""
+    builder = InlineKeyboardBuilder()
+    
+    for player in players:
+        name = player.get('game_nickname') or player.get('username') or player.get('full_name', 'Игрок')
+        team_emoji = EMOJI['red'] if player.get('team') == 1 else EMOJI['blue']
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{team_emoji} {EMOJI['star']} {name}",
+                callback_data=f"ai:set_mvp:{verification_id}:{match_id}:{player['user_id']}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Без MVP",
+            callback_data=f"ai:set_mvp:{verification_id}:{match_id}:0"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data=f"ai:back:{verification_id}:{match_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_ai_pending_list_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для списка ожидающих AI проверок"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"🤖 AI проверки",
+            callback_data="admin:ai_verifications"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['camera']} Ручные проверки",
+            callback_data="admin:submissions"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад в меню",
+            callback_data="admin:back"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_ai_invalid_screenshot_keyboard(verification_id: int, match_id: int, submission_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для невалидного скриншота (определённого AI)"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отклонить заявку",
+            callback_data=f"ai:reject_invalid:{verification_id}:{submission_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['gear']} Всё равно провести ручную проверку",
+            callback_data=f"ai:manual_anyway:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['info']} Детали матча",
+            callback_data=f"ai:details:{match_id}"
+        )
+    )
+    
+    return builder.as_markup()

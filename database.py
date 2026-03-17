@@ -201,6 +201,30 @@ async def init_db():
             )
         """)
         
+        # Таблица AI проверок результатов матчей
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS ai_verifications (
+                verification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                submission_id INTEGER,
+                match_id INTEGER,
+                ai_result TEXT,
+                confidence REAL DEFAULT 0,
+                team1_score INTEGER DEFAULT NULL,
+                team2_score INTEGER DEFAULT NULL,
+                winner_team INTEGER DEFAULT NULL,
+                mvp_user_id INTEGER DEFAULT NULL,
+                status TEXT DEFAULT 'pending',
+                admin_id INTEGER DEFAULT NULL,
+                admin_action TEXT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                reviewed_at TIMESTAMP DEFAULT NULL,
+                FOREIGN KEY (submission_id) REFERENCES match_submissions(submission_id),
+                FOREIGN KEY (match_id) REFERENCES matches(match_id),
+                FOREIGN KEY (admin_id) REFERENCES users(user_id),
+                FOREIGN KEY (mvp_user_id) REFERENCES users(user_id)
+            )
+        """)
+        
         # Миграция: добавляем столбец photo_file_id если его нет
         try:
             await db.execute("ALTER TABLE tickets ADD COLUMN photo_file_id TEXT DEFAULT NULL")
@@ -1476,3 +1500,154 @@ async def get_ticket_stats() -> Dict[str, int]:
             stats['closed'] = (await cursor.fetchone())[0]
         
         return stats
+
+
+# ============ AI VERIFICATION FUNCTIONS ============
+
+async def create_ai_verification(
+    submission_id: int,
+    match_id: int,
+    ai_result: str,
+    confidence: float,
+    team1_score: int = None,
+    team2_score: int = None,
+    winner_team: int = None,
+    mvp_user_id: int = None
+) -> int:
+    """Создать запись AI проверки"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO ai_verifications 
+            (submission_id, match_id, ai_result, confidence, team1_score, team2_score, winner_team, mvp_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (submission_id, match_id, ai_result, confidence, team1_score, team2_score, winner_team, mvp_user_id))
+        verification_id = cursor.lastrowid
+        await db.commit()
+        return verification_id
+
+
+async def get_ai_verification(verification_id: int) -> Optional[Dict[str, Any]]:
+    """Получить AI проверку по ID"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ai_verifications WHERE verification_id = ?",
+            (verification_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def get_ai_verification_by_submission(submission_id: int) -> Optional[Dict[str, Any]]:
+    """Получить AI проверку по ID заявки"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ai_verifications WHERE submission_id = ? ORDER BY created_at DESC LIMIT 1",
+            (submission_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
+async def get_pending_ai_verifications() -> List[Dict[str, Any]]:
+    """Получить AI проверки, ожидающие подтверждения администратора"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT av.*, m.map_name, m.platform, m.team1_avg_rating, m.team2_avg_rating,
+                   m.team1_start_side, m.team2_start_side, m.game_format,
+                   ms.screenshot_file_id, ms.submitted_by,
+                   u.username as submitter_name
+            FROM ai_verifications av
+            JOIN matches m ON av.match_id = m.match_id
+            JOIN match_submissions ms ON av.submission_id = ms.submission_id
+            JOIN users u ON ms.submitted_by = u.user_id
+            WHERE av.status = 'pending'
+            ORDER BY av.created_at ASC
+        """
+        async with db.execute(query) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def update_ai_verification_status(
+    verification_id: int,
+    status: str,
+    admin_id: int,
+    admin_action: str
+) -> None:
+    """Обновить статус AI проверки"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            UPDATE ai_verifications SET 
+                status = ?,
+                admin_id = ?,
+                admin_action = ?,
+                reviewed_at = ?
+            WHERE verification_id = ?
+        """, (status, admin_id, admin_action, datetime.now(), verification_id))
+        await db.commit()
+
+
+async def update_ai_verification_result(
+    verification_id: int,
+    team1_score: int,
+    team2_score: int,
+    winner_team: int,
+    mvp_user_id: int = None
+) -> None:
+    """Обновить результаты AI проверки (после редактирования администратором)"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            UPDATE ai_verifications SET 
+                team1_score = ?,
+                team2_score = ?,
+                winner_team = ?,
+                mvp_user_id = ?
+            WHERE verification_id = ?
+        """, (team1_score, team2_score, winner_team, mvp_user_id, verification_id))
+        await db.commit()
+
+
+async def get_all_admins_and_moderators() -> List[Dict[str, Any]]:
+    """Получить всех администраторов и модераторов"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT user_id, username, full_name, is_admin, is_moderator
+            FROM users 
+            WHERE is_admin = 1 OR is_moderator = 1
+        """
+        async with db.execute(query) as cursor:
+            rows = await cursor.fetchall()
+        
+        result = [dict(row) for row in rows]
+        
+        # Также добавляем админов из конфига, если их нет в БД
+        from config import ADMIN_IDS, MODERATOR_IDS
+        existing_ids = {r['user_id'] for r in result}
+        
+        for admin_id in ADMIN_IDS:
+            if admin_id not in existing_ids:
+                result.append({
+                    'user_id': admin_id,
+                    'username': None,
+                    'full_name': None,
+                    'is_admin': True,
+                    'is_moderator': False
+                })
+                existing_ids.add(admin_id)
+        
+        for mod_id in MODERATOR_IDS:
+            if mod_id not in existing_ids:
+                result.append({
+                    'user_id': mod_id,
+                    'username': None,
+                    'full_name': None,
+                    'is_admin': False,
+                    'is_moderator': True
+                })
+                existing_ids.add(mod_id)
+        
+        return result

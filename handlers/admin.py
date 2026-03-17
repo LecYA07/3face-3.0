@@ -1086,6 +1086,471 @@ async def version_command(message: Message):
         )
 
 
+# ============ AI VERIFICATION HANDLERS ============
+
+@router.callback_query(F.data == "admin:ai_verifications")
+async def show_ai_verifications(callback: CallbackQuery):
+    """Показать AI проверки, ожидающие подтверждения"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    verifications = await db.get_pending_ai_verifications()
+    
+    if not verifications:
+        await callback.message.edit_text(
+            f"{EMOJI['check']} *Нет AI проверок на подтверждение*\n\n"
+            f"Все результаты обработаны.",
+            reply_markup=get_admin_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Показываем первую проверку
+    verification = verifications[0]
+    await show_ai_verification_details(callback, verification)
+    await callback.answer()
+
+
+async def show_ai_verification_details(callback: CallbackQuery, verification: dict):
+    """Показать детали AI проверки"""
+    import json
+    from keyboards import get_ai_verification_keyboard
+    from ai_verification import format_ai_result_for_admin
+    
+    match_id = verification['match_id']
+    verification_id = verification['verification_id']
+    
+    # Получаем данные матча
+    match = await db.get_match(match_id)
+    team1_players = await db.get_match_players(match_id, team=1)
+    team2_players = await db.get_match_players(match_id, team=2)
+    
+    # Парсим AI результат
+    try:
+        ai_result = json.loads(verification.get('ai_result', '{}'))
+    except:
+        ai_result = {}
+    
+    admin_text = format_ai_result_for_admin(ai_result, match or {}, team1_players, team2_players)
+    
+    await callback.message.answer_photo(
+        photo=verification['screenshot_file_id'],
+        caption=(
+            f"📷 *AI Проверка #{verification_id}*\n"
+            f"Матч: #{match_id}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{admin_text}"
+        ),
+        reply_markup=get_ai_verification_keyboard(verification_id, match_id),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("ai:approve:"))
+async def approve_ai_verification(callback: CallbackQuery):
+    """Подтвердить результат AI проверки"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    verification = await db.get_ai_verification(verification_id)
+    if not verification:
+        await callback.answer("Проверка не найдена!", show_alert=True)
+        return
+    
+    if verification['status'] != 'pending':
+        await callback.answer("Эта проверка уже обработана!", show_alert=True)
+        return
+    
+    # Проверяем что есть все необходимые данные
+    if verification['winner_team'] is None or verification['team1_score'] is None:
+        await callback.answer("AI не смог определить результат. Используйте редактирование.", show_alert=True)
+        return
+    
+    # Применяем результаты
+    await apply_match_result(
+        match_id=match_id,
+        team1_score=verification['team1_score'],
+        team2_score=verification['team2_score'],
+        winner_team=verification['winner_team'],
+        mvp_user_id=verification['mvp_user_id'],
+        verified_by=callback.from_user.id
+    )
+    
+    # Обновляем статус AI проверки
+    await db.update_ai_verification_status(
+        verification_id=verification_id,
+        status='approved',
+        admin_id=callback.from_user.id,
+        admin_action='approve'
+    )
+    
+    # Обновляем статус заявки
+    await db.update_submission_status(verification['submission_id'], 'approved', callback.from_user.id)
+    
+    await callback.message.edit_caption(
+        caption=(
+            f"{EMOJI['check']} *Результат подтверждён!*\n\n"
+            f"Матч: #{match_id}\n"
+            f"Счёт: {verification['team1_score']}:{verification['team2_score']}\n"
+            f"Победитель: Команда {verification['winner_team']}\n\n"
+            f"Статистика игроков обновлена."
+        ),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Результат подтверждён!")
+
+
+@router.callback_query(F.data.startswith("ai:edit:"))
+async def edit_ai_verification(callback: CallbackQuery, state: FSMContext):
+    """Редактировать результат AI проверки"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    from keyboards import get_ai_edit_winner_keyboard
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    await state.update_data(
+        verification_id=verification_id,
+        match_id=match_id
+    )
+    
+    await callback.message.answer(
+        f"{EMOJI['gear']} *Редактирование результата*\n\n"
+        f"Матч: #{match_id}\n\n"
+        f"Выберите команду-победителя:",
+        reply_markup=get_ai_edit_winner_keyboard(verification_id, match_id),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ai:set_winner:"))
+async def set_ai_winner(callback: CallbackQuery, state: FSMContext):
+    """Установить победителя при редактировании"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    winner_team = int(parts[4])
+    
+    await state.update_data(winner_team=winner_team)
+    await state.set_state(AdminStates.entering_score)
+    
+    winner_text = "Команда 1" if winner_team == 1 else "Команда 2"
+    
+    await callback.message.edit_text(
+        f"{EMOJI['trophy']} Победитель: *{winner_text}*\n\n"
+        f"{EMOJI['target']} Введите счёт матча в формате:\n"
+        f"`счёт_команды1:счёт_команды2`\n\n"
+        f"Например: `16:14` или `13:16`",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ai:reject:"))
+async def reject_ai_verification(callback: CallbackQuery):
+    """Отклонить AI проверку и перейти к ручной"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    verification = await db.get_ai_verification(verification_id)
+    if not verification:
+        await callback.answer("Проверка не найдена!", show_alert=True)
+        return
+    
+    # Обновляем статус AI проверки
+    await db.update_ai_verification_status(
+        verification_id=verification_id,
+        status='rejected',
+        admin_id=callback.from_user.id,
+        admin_action='reject'
+    )
+    
+    # Показываем форму ручной проверки
+    from keyboards import get_team_winner_keyboard
+    
+    match = await db.get_match(match_id)
+    team1 = await db.get_match_players(match_id, team=1)
+    team2 = await db.get_match_players(match_id, team=2)
+    
+    def format_player(p):
+        username = p.get('game_nickname') or p.get('username') or 'игрок'
+        rating = p.get('rating_before', p.get('rating', 0))
+        return f"  • {username} [{rating}]"
+    
+    team1_list = "\n".join([format_player(p) for p in team1])
+    team2_list = "\n".join([format_player(p) for p in team2])
+    
+    await callback.message.answer(
+        f"{EMOJI['target']} <b>Ручная проверка матча #{match_id}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{EMOJI['map']} Карта: {match['map_name']}\n\n"
+        f"{EMOJI['red']} <b>Команда 1</b> ({match['team1_start_side']}):\n"
+        f"{team1_list}\n\n"
+        f"{EMOJI['blue']} <b>Команда 2</b> ({match['team2_start_side']}):\n"
+        f"{team2_list}\n\n"
+        f"{EMOJI['info']} <b>Выберите команду-победителя:</b>",
+        reply_markup=get_team_winner_keyboard(match_id),
+        parse_mode="HTML"
+    )
+    await callback.answer("Переход к ручной проверке")
+
+
+@router.callback_query(F.data.startswith("ai:details:"))
+async def show_ai_match_details(callback: CallbackQuery):
+    """Показать детали матча для AI проверки"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    match_id = int(callback.data.split(":")[2])
+    
+    match = await db.get_match(match_id)
+    if not match:
+        await callback.answer("Матч не найден!", show_alert=True)
+        return
+    
+    team1 = await db.get_match_players(match_id, team=1)
+    team2 = await db.get_match_players(match_id, team=2)
+    
+    await callback.message.answer(
+        format_match_info(match, team1, team2),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ai:back:"))
+async def back_to_ai_verification(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к AI проверке"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    await state.clear()
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    verification = await db.get_ai_verification(verification_id)
+    if verification:
+        # Получаем полные данные для показа
+        verifications = await db.get_pending_ai_verifications()
+        for v in verifications:
+            if v['verification_id'] == verification_id:
+                await show_ai_verification_details(callback, v)
+                break
+    
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ai:reject_invalid:"))
+async def reject_invalid_screenshot(callback: CallbackQuery):
+    """Отклонить невалидный скриншот"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    submission_id = int(parts[3])
+    
+    # Обновляем статус AI проверки
+    await db.update_ai_verification_status(
+        verification_id=verification_id,
+        status='rejected',
+        admin_id=callback.from_user.id,
+        admin_action='reject_invalid'
+    )
+    
+    # Обновляем статус заявки
+    await db.update_submission_status(submission_id, 'rejected', callback.from_user.id)
+    
+    # Получаем информацию о заявке для уведомления игрока
+    submission = await db.get_submission(submission_id)
+    
+    if submission:
+        # Уведомляем игрока об отклонении
+        try:
+            await callback.bot.send_message(
+                chat_id=submission['submitted_by'],
+                text=(
+                    f"❌ *Ваш скриншот отклонён*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"Заявка #{submission_id} была отклонена.\n\n"
+                    f"📝 *Причина:* Отправленное изображение не является корректным скриншотом результатов матча.\n\n"
+                    f"⚠️ Пожалуйста, отправьте скриншот с финальным экраном результатов матча, где видны:\n"
+                    f"• Счёт матча\n"
+                    f"• Ники игроков\n"
+                    f"• Статистика K/D/A\n\n"
+                    f"Используйте кнопку «Отправить скриншот» в меню матча."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify user about rejection: {e}")
+    
+    await callback.message.edit_caption(
+        caption=(
+            f"{EMOJI['cross']} *Заявка #{submission_id} отклонена*\n\n"
+            f"Скриншот был невалидным.\n"
+            f"Игрок уведомлён о необходимости отправить корректный скриншот."
+        ),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Заявка отклонена, игрок уведомлён")
+
+
+@router.callback_query(F.data.startswith("ai:manual_anyway:"))
+async def manual_check_anyway(callback: CallbackQuery, state: FSMContext):
+    """Провести ручную проверку, несмотря на невалидность скриншота по мнению AI"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    # Обновляем статус AI проверки
+    await db.update_ai_verification_status(
+        verification_id=verification_id,
+        status='manual_override',
+        admin_id=callback.from_user.id,
+        admin_action='manual_anyway'
+    )
+    
+    # Показываем форму ручной проверки
+    match = await db.get_match(match_id)
+    team1 = await db.get_match_players(match_id, team=1)
+    team2 = await db.get_match_players(match_id, team=2)
+    
+    def format_player(p):
+        username = p.get('game_nickname') or p.get('username') or 'игрок'
+        rating = p.get('rating_before', p.get('rating', 0))
+        return f"  • {username} [{rating}]"
+    
+    team1_list = "\n".join([format_player(p) for p in team1])
+    team2_list = "\n".join([format_player(p) for p in team2])
+    
+    await callback.message.answer(
+        f"{EMOJI['target']} <b>Ручная проверка матча #{match_id}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⚠️ <i>AI определил скриншот как невалидный, но вы решили провести ручную проверку</i>\n\n"
+        f"{EMOJI['map']} Карта: {match['map_name']}\n\n"
+        f"{EMOJI['red']} <b>Команда 1</b> ({match['team1_start_side']}):\n"
+        f"{team1_list}\n\n"
+        f"{EMOJI['blue']} <b>Команда 2</b> ({match['team2_start_side']}):\n"
+        f"{team2_list}\n\n"
+        f"{EMOJI['info']} <b>Выберите команду-победителя:</b>",
+        reply_markup=get_team_winner_keyboard(match_id),
+        parse_mode="HTML"
+    )
+    
+    # Сохраняем данные для последующей обработки
+    verification = await db.get_ai_verification(verification_id)
+    if verification:
+        await state.update_data(
+            submission_id=verification['submission_id'],
+            match_id=match_id,
+            reviewer_id=callback.from_user.id
+        )
+    
+    await callback.answer("Переход к ручной проверке")
+
+
+async def apply_match_result(match_id: int, team1_score: int, team2_score: int, 
+                             winner_team: int, mvp_user_id: int, verified_by: int):
+    """Применить результаты матча (общая функция для AI и ручной проверки)"""
+    # Получаем информацию о матче
+    match = await db.get_match(match_id)
+    team1_avg = match.get('team1_avg_rating', 1000)
+    team2_avg = match.get('team2_avg_rating', 1000)
+    
+    # Определяем рейтинги команд
+    if winner_team == 1:
+        winner_rating = team1_avg
+        loser_rating = team2_avg
+    else:
+        winner_rating = team2_avg
+        loser_rating = team1_avg
+    
+    # Обновляем результат матча
+    await db.update_match_result(match_id, team1_score, team2_score, winner_team)
+    
+    # Обновляем статистику игроков
+    team1_players = await db.get_match_players(match_id, team=1)
+    team2_players = await db.get_match_players(match_id, team=2)
+    
+    # Команда 1
+    for player in team1_players:
+        is_winner = winner_team == 1
+        is_mvp = player['user_id'] == mvp_user_id
+        rating_change = calculate_rating_change(winner_rating, loser_rating, is_winner, is_mvp)
+        
+        await db.update_match_player_stats(
+            match_id=match_id,
+            user_id=player['user_id'],
+            kills=0,
+            deaths=0,
+            assists=0,
+            is_mvp=is_mvp,
+            rating_change=rating_change
+        )
+        
+        await db.update_user_stats(
+            user_id=player['user_id'],
+            wins=1 if is_winner else 0,
+            losses=0 if is_winner else 1,
+            rating_change=rating_change,
+            is_mvp=is_mvp
+        )
+    
+    # Команда 2
+    for player in team2_players:
+        is_winner = winner_team == 2
+        is_mvp = player['user_id'] == mvp_user_id
+        rating_change = calculate_rating_change(winner_rating, loser_rating, is_winner, is_mvp)
+        
+        await db.update_match_player_stats(
+            match_id=match_id,
+            user_id=player['user_id'],
+            kills=0,
+            deaths=0,
+            assists=0,
+            is_mvp=is_mvp,
+            rating_change=rating_change
+        )
+        
+        await db.update_user_stats(
+            user_id=player['user_id'],
+            wins=1 if is_winner else 0,
+            losses=0 if is_winner else 1,
+            rating_change=rating_change,
+            is_mvp=is_mvp
+        )
+
+
 @router.callback_query(F.data == "admin:backup")
 async def backup_database_callback(callback: CallbackQuery):
     """Создать бэкап через кнопку в админ-панели"""

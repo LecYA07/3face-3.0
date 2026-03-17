@@ -6,6 +6,13 @@ load_dotenv()
 # Bot Token
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# OpenAI Settings (для автопроверки результатов матчей)
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.onlysq.ru/ai/openai")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+AI_VERIFICATION_ENABLED = os.getenv("AI_VERIFICATION_ENABLED", "true").lower() == "true"
+AI_AUTO_APPROVE_CONFIDENCE = float(os.getenv("AI_AUTO_APPROVE_CONFIDENCE", "0.95"))  # Порог автоподтверждения
+
 # WebApp Settings
 WEBAPP_HOST = os.getenv("WEBAPP_HOST", "0.0.0.0")
 WEBAPP_PORT = int(os.getenv("WEBAPP_PORT", "443"))

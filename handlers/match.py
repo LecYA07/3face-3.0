@@ -524,6 +524,8 @@ async def request_screenshot(callback: CallbackQuery, state: FSMContext):
 
 @router.message(MatchStates.waiting_for_screenshot, F.photo)
 async def receive_screenshot(message: Message, state: FSMContext):
+    from config import AI_VERIFICATION_ENABLED
+    
     data = await state.get_data()
     match_id = data.get('match_id')
     
@@ -542,11 +544,144 @@ async def receive_screenshot(message: Message, state: FSMContext):
     submission_id = await db.create_submission(match_id, message.from_user.id, photo.file_id)
     
     await state.clear()
-    await message.answer(
-        f"{EMOJI['check']} *Скриншот отправлен на проверку!*\n\n"
-        f"Номер заявки: #{submission_id}\nМатч: #{match_id}\n\n"
-        f"Модераторы проверят результаты и обновят статистику.",
-        parse_mode="Markdown")
+    
+    # Если включена AI проверка, запускаем анализ
+    if AI_VERIFICATION_ENABLED:
+        await message.answer(
+            f"{EMOJI['check']} *Скриншот получен!*\n\n"
+            f"🤖 Запускаю AI анализ результатов...\n"
+            f"Это займёт несколько секунд.",
+            parse_mode="Markdown")
+        
+        # Запускаем AI анализ в фоне
+        asyncio.create_task(
+            process_ai_verification(message.bot, submission_id, match_id, photo.file_id)
+        )
+    else:
+        await message.answer(
+            f"{EMOJI['check']} *Скриншот отправлен на проверку!*\n\n"
+            f"Номер заявки: #{submission_id}\nМатч: #{match_id}\n\n"
+            f"Модераторы проверят результаты и обновят статистику.",
+            parse_mode="Markdown")
+
+
+async def process_ai_verification(bot, submission_id: int, match_id: int, photo_file_id: str):
+    """Обработка AI проверки скриншота"""
+    import json
+    from ai_verification import analyze_match_screenshot, download_and_encode_photo, format_ai_result_for_admin, is_valid_match_screenshot
+    from keyboards import get_ai_verification_keyboard, get_ai_invalid_screenshot_keyboard
+    
+    try:
+        # Получаем данные матча
+        match = await db.get_match(match_id)
+        if not match:
+            logger.error(f"Match {match_id} not found for AI verification")
+            return
+        
+        team1_players = await db.get_match_players(match_id, team=1)
+        team2_players = await db.get_match_players(match_id, team=2)
+        
+        # Скачиваем и кодируем изображение
+        image_base64 = await download_and_encode_photo(bot, photo_file_id)
+        if not image_base64:
+            logger.error(f"Failed to download photo for submission {submission_id}")
+            await notify_admins_manual_check(bot, submission_id, match_id, "Не удалось скачать изображение")
+            return
+        
+        # Запускаем AI анализ
+        ai_result = await analyze_match_screenshot(
+            image_base64=image_base64,
+            team1_players=team1_players,
+            team2_players=team2_players,
+            team1_side=match.get('team1_start_side', 'Атака'),
+            team2_side=match.get('team2_start_side', 'Защита'),
+            map_name=match.get('map_name', 'Неизвестно')
+        )
+        
+        # Сохраняем результат AI в базу
+        verification_id = await db.create_ai_verification(
+            submission_id=submission_id,
+            match_id=match_id,
+            ai_result=json.dumps(ai_result, ensure_ascii=False),
+            confidence=ai_result.get('confidence', 0),
+            team1_score=ai_result.get('team1_score'),
+            team2_score=ai_result.get('team2_score'),
+            winner_team=ai_result.get('winner_team'),
+            mvp_user_id=ai_result.get('mvp_user_id')
+        )
+        
+        # Формируем сообщение для админов
+        admin_text = format_ai_result_for_admin(ai_result, match, team1_players, team2_players)
+        
+        # Выбираем клавиатуру в зависимости от валидности скриншота
+        if ai_result.get('is_valid_screenshot') == False:
+            # Невалидный скриншот - специальная клавиатура
+            keyboard = get_ai_invalid_screenshot_keyboard(verification_id, match_id, submission_id)
+        else:
+            # Валидный скриншот - обычная клавиатура
+            keyboard = get_ai_verification_keyboard(verification_id, match_id)
+        
+        # Отправляем уведомления всем админам и модераторам
+        admins = await db.get_all_admins_and_moderators()
+        
+        submission = await db.get_submission(submission_id)
+        
+        for admin in admins:
+            try:
+                # Отправляем скриншот с результатами AI
+                await bot.send_photo(
+                    chat_id=admin['user_id'],
+                    photo=photo_file_id,
+                    caption=(
+                        f"📷 *Новая заявка #{submission_id}*\n"
+                        f"Матч: #{match_id}\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"{admin_text}"
+                    ),
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify admin {admin['user_id']}: {e}")
+        
+        # Логируем результат
+        is_valid = ai_result.get('is_valid_screenshot', True)
+        screenshot_type = ai_result.get('screenshot_type', 'unknown')
+        logger.info(f"AI verification completed for submission {submission_id}: valid={is_valid}, type={screenshot_type}, confidence={ai_result.get('confidence', 0)}")
+        
+    except Exception as e:
+        logger.error(f"AI verification error for submission {submission_id}: {e}")
+        await notify_admins_manual_check(bot, submission_id, match_id, str(e))
+
+
+async def notify_admins_manual_check(bot, submission_id: int, match_id: int, error_reason: str):
+    """Уведомить админов о необходимости ручной проверки"""
+    from keyboards import get_submission_review_keyboard
+    
+    admins = await db.get_all_admins_and_moderators()
+    submission = await db.get_submission(submission_id)
+    
+    if not submission:
+        return
+    
+    for admin in admins:
+        try:
+            await bot.send_photo(
+                chat_id=admin['user_id'],
+                photo=submission['screenshot_file_id'],
+                caption=(
+                    f"📷 *Новая заявка #{submission_id}*\n"
+                    f"Матч: #{match_id}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🤖 *AI анализ не удался*\n"
+                    f"Причина: {error_reason}\n\n"
+                    f"⚠️ Требуется ручная проверка!"
+                ),
+                reply_markup=get_submission_review_keyboard(submission_id, match_id),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify admin {admin['user_id']}: {e}")
 
 
 @router.message(MatchStates.waiting_for_screenshot)
