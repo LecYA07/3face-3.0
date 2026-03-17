@@ -837,9 +837,11 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "LecYA07/3face-3.0")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "master")
 
 # Файлы и папки которые нужно сохранить при обновлении
-PRESERVE_FILES = [".env", "database.db", "backups"]
+PRESERVE_FILES = [".env", "database.db", "backups", ".version"]
 # Файлы и папки которые НЕ нужно копировать из архива
 SKIP_FILES = [".env.example", ".git", ".gitignore", "__pycache__"]
+# Файл для хранения текущей версии
+VERSION_FILE = ".version"
 
 
 def escape_html(text: str) -> str:
@@ -985,6 +987,22 @@ async def update_bot_command(message: Message):
         else:
             files_list = "\n".join([f"  • {escape_html(f)}" for f in updated_files[:10]]) + f"\n  ... и ещё {len(updated_files) - 10}"
         
+        # 7. Сохраняем информацию о версии
+        try:
+            async with aiohttp.ClientSession() as session:
+                api_url = f"https://api.github.com/repos/{GITHUB_REPO}/commits?sha={GITHUB_BRANCH}&per_page=1"
+                headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "3face-bot"}
+                async with session.get(api_url, headers=headers) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data and len(data) > 0:
+                            commit_sha = data[0]['sha']
+                            commit_date = data[0]['commit']['committer']['date']
+                            with open(VERSION_FILE, "w", encoding="utf-8") as f:
+                                f.write(f"{commit_sha}\n{commit_date}\n{GITHUB_BRANCH}")
+        except Exception as version_error:
+            logger.warning(f"Failed to save version info: {version_error}")
+        
         await message.answer(
             f"{EMOJI['check']} <b>Обновление завершено!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -1036,14 +1054,35 @@ async def restart_bot_command(message: Message):
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+def get_local_version():
+    """Получить локальную версию бота из файла"""
+    if os.path.exists(VERSION_FILE):
+        try:
+            with open(VERSION_FILE, "r", encoding="utf-8") as f:
+                lines = f.read().strip().split("\n")
+                return {
+                    "sha": lines[0] if len(lines) > 0 else None,
+                    "date": lines[1] if len(lines) > 1 else None,
+                    "branch": lines[2] if len(lines) > 2 else None
+                }
+        except Exception:
+            pass
+    return {"sha": None, "date": None, "branch": None}
+
+
 @router.message(F.text.startswith("/version"))
 async def version_command(message: Message):
-    """Показать текущую версию бота"""
+    """Показать текущую версию бота и проверить обновления"""
     if not await is_admin(message.from_user.id):
         await message.answer(f"{EMOJI['lock']} Только для администраторов!")
         return
     
     import aiohttp
+    
+    # Получаем локальную версию
+    local_version = get_local_version()
+    local_sha = local_version.get("sha")
+    local_date = local_version.get("date")
     
     try:
         # Получаем информацию о последних коммитах с GitHub API
@@ -1060,21 +1099,45 @@ async def version_command(message: Message):
                     data = await response.json()
                     if data and len(data) > 0:
                         commit = data[0]
-                        commit_sha = commit['sha'][:7]
+                        remote_sha = commit['sha']
+                        commit_sha_short = remote_sha[:7]
                         commit_msg = commit['commit']['message'].split('\n')[0][:50]
                         commit_date = commit['commit']['committer']['date'][:10]
                         author = commit['commit']['author']['name']
                         
+                        # Проверяем актуальность версии
+                        if local_sha:
+                            local_sha_short = local_sha[:7]
+                            if local_sha == remote_sha:
+                                status_text = f"{EMOJI['check']} *Бот обновлён до последней версии!*"
+                                status_emoji = "✅"
+                            else:
+                                status_text = f"{EMOJI['warning']} *Доступно обновление!*"
+                                status_emoji = "⚠️"
+                            
+                            local_date_formatted = local_date[:10] if local_date else "неизвестно"
+                            local_info = (
+                                f"\n📌 *Установленная версия:*\n"
+                                f"  • SHA: `{local_sha_short}`\n"
+                                f"  • Дата: {local_date_formatted}\n"
+                            )
+                        else:
+                            status_text = f"{EMOJI['info']} *Версия не отслеживается*\n_(выполните /update для синхронизации)_"
+                            status_emoji = "ℹ️"
+                            local_info = ""
+                        
                         await message.answer(
-                            f"{EMOJI['info']} *Информация о репозитории*\n"
+                            f"{EMOJI['info']} *Информация о версии*\n"
                             f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                            f"📦 Репозиторий: {GITHUB_REPO}\n"
-                            f"🌿 Ветка: {GITHUB_BRANCH}\n\n"
-                            f"📝 *Последний коммит:*\n"
-                            f"  • SHA: `{commit_sha}`\n"
+                            f"{status_text}\n"
+                            f"{local_info}\n"
+                            f"🌐 *Последняя версия на GitHub:*\n"
+                            f"  • SHA: `{commit_sha_short}`\n"
                             f"  • Дата: {commit_date}\n"
-                            f"  • Автор: {author}\n"
-                            f"  • Сообщение: {commit_msg}",
+                            f"  • Автор: {escape_html(author)}\n"
+                            f"  • Сообщение: {escape_html(commit_msg)}\n\n"
+                            f"📦 Репозиторий: {GITHUB_REPO}\n"
+                            f"🌿 Ветка: {GITHUB_BRANCH}",
                             parse_mode="Markdown"
                         )
                     else:
@@ -1083,15 +1146,39 @@ async def version_command(message: Message):
                             parse_mode="Markdown"
                         )
                 else:
-                    await message.answer(
-                        f"{EMOJI['warning']} Не удалось получить информацию о версии.\n"
-                        f"HTTP статус: {response.status}",
-                        parse_mode="Markdown"
-                    )
+                    # Показываем хотя бы локальную версию, если не удалось получить с GitHub
+                    if local_sha:
+                        local_sha_short = local_sha[:7]
+                        local_date_formatted = local_date[:10] if local_date else "неизвестно"
+                        await message.answer(
+                            f"{EMOJI['warning']} Не удалось проверить обновления (HTTP {response.status})\n\n"
+                            f"📌 *Установленная версия:*\n"
+                            f"  • SHA: `{local_sha_short}`\n"
+                            f"  • Дата: {local_date_formatted}",
+                            parse_mode="Markdown"
+                        )
+                    else:
+                        await message.answer(
+                            f"{EMOJI['warning']} Не удалось получить информацию о версии.\n"
+                            f"HTTP статус: {response.status}",
+                            parse_mode="Markdown"
+                        )
     except Exception as e:
-        await message.answer(
-            f"{EMOJI['warning']} Ошибка: {str(e)}"
-        )
+        # Показываем хотя бы локальную версию при ошибке
+        if local_sha:
+            local_sha_short = local_sha[:7]
+            local_date_formatted = local_date[:10] if local_date else "неизвестно"
+            await message.answer(
+                f"{EMOJI['warning']} Ошибка проверки обновлений: {escape_html(str(e))}\n\n"
+                f"📌 *Установленная версия:*\n"
+                f"  • SHA: `{local_sha_short}`\n"
+                f"  • Дата: {local_date_formatted}",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer(
+                f"{EMOJI['warning']} Ошибка: {escape_html(str(e))}"
+            )
 
 
 # ============ AI VERIFICATION HANDLERS ============
