@@ -430,15 +430,16 @@ async def start_lobby_search_match(callback: CallbackQuery):
     format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
     platform = lobby['platform']
     
-    # Проверяем что никто не в очереди и не в активном матче
+    # Проверяем что никто не в очереди и не в pending матче (ready check)
+    # Игроки могут быть в активных матчах - они могут искать следующий матч
     for player in players:
         if await db.is_in_queue(player['user_id']):
             player_name = format_player_name(player)
             await callback.answer(f"{player_name} уже в очереди поиска!", show_alert=True)
             return
-        if await db.is_user_in_active_or_pending_match(player['user_id']):
+        if await db.is_user_in_pending_match(player['user_id']):
             player_name = format_player_name(player)
-            await callback.answer(f"{player_name} уже в активном матче!", show_alert=True)
+            await callback.answer(f"{player_name} ожидает подтверждения матча!", show_alert=True)
             return
     
     # Удаляем лобби (освобождаем игроков)
@@ -564,10 +565,11 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
         await callback.answer(f"Недостаточно игроков! Нужно {lobby_size}.", show_alert=True)
         return
     
-    # Проверяем что никто не в активном матче
+    # Проверяем что никто не в pending матче (ready check)
+    # Игроки могут быть в активных матчах - они могут начать новый матч из лобби
     for player in players:
-        if await db.is_user_in_active_or_pending_match(player['user_id']):
-            await callback.answer("Один из игроков уже в матче!", show_alert=True)
+        if await db.is_user_in_pending_match(player['user_id']):
+            await callback.answer("Один из игроков ожидает подтверждения матча!", show_alert=True)
             return
     
     # Балансируем команды с учётом формата

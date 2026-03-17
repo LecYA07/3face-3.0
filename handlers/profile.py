@@ -1,5 +1,5 @@
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
@@ -17,6 +17,7 @@ router = Router()
 class ProfileStates(StatesGroup):
     waiting_for_nickname = State()
     waiting_for_game_id = State()
+    waiting_for_search_query = State()
 
 
 @router.message(F.text.contains("Профиль"))
@@ -429,3 +430,264 @@ async def decline_party_invite(callback: CallbackQuery):
         parse_mode="Markdown"
     )
     await callback.answer()
+
+
+# ============ ПОИСК ИГРОКОВ ============
+
+@router.message(F.text.contains("Поиск игрока"))
+async def search_player_prompt(message: Message, state: FSMContext):
+    """Начать поиск игрока (только для админов)"""
+    # Проверяем права админа/модератора
+    is_admin = await db.is_user_admin(message.from_user.id)
+    is_moderator = await db.is_user_moderator(message.from_user.id)
+    
+    if not is_admin and not is_moderator:
+        await message.answer(
+            f"{EMOJI['warning']} Эта функция доступна только для администраторов и модераторов."
+        )
+        return
+    
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer(
+            f"{EMOJI['warning']} Сначала зарегистрируйтесь командой /start"
+        )
+        return
+    
+    await state.set_state(ProfileStates.waiting_for_search_query)
+    
+    await message.answer(
+        f"🔍 *Поиск игрока*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Отправьте запрос для поиска:\n\n"
+        f"• Игровой ник\n"
+        f"• Telegram username (с @ или без)\n"
+        f"• Telegram ID (число)\n"
+        f"• Игровой ID\n\n"
+        f"{EMOJI['info']} Для отмены отправьте /cancel",
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data == "search:player")
+async def search_player_callback(callback: CallbackQuery, state: FSMContext):
+    """Начать поиск игрока через кнопку (только для админов)"""
+    # Проверяем права админа/модератора
+    is_admin = await db.is_user_admin(callback.from_user.id)
+    is_moderator = await db.is_user_moderator(callback.from_user.id)
+    
+    if not is_admin and not is_moderator:
+        await callback.answer("Эта функция доступна только для администраторов!", show_alert=True)
+        return
+    
+    await state.set_state(ProfileStates.waiting_for_search_query)
+    
+    await callback.message.answer(
+        f"🔍 *Поиск игрока*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Отправьте запрос для поиска:\n\n"
+        f"• Игровой ник\n"
+        f"• Telegram username (с @ или без)\n"
+        f"• Telegram ID (число)\n"
+        f"• Игровой ID\n\n"
+        f"{EMOJI['info']} Для отмены отправьте /cancel",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(ProfileStates.waiting_for_search_query, F.text == "/cancel")
+async def cancel_search(message: Message, state: FSMContext):
+    """Отменить поиск"""
+    await state.clear()
+    await message.answer(
+        f"{EMOJI['cross']} Поиск отменён.",
+        parse_mode="Markdown"
+    )
+
+
+@router.message(ProfileStates.waiting_for_search_query)
+async def process_search_query(message: Message, state: FSMContext):
+    """Обработать поисковый запрос"""
+    query = message.text.strip()
+    
+    if len(query) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} Запрос слишком короткий! Минимум 2 символа.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    await state.clear()
+    
+    # Ищем игроков
+    results = await db.search_users(query, limit=10)
+    
+    if not results:
+        await message.answer(
+            f"🔍 *Поиск:* `{query}`\n\n"
+            f"{EMOJI['info']} Игроки не найдены.\n\n"
+            f"Попробуйте другой запрос.",
+            reply_markup=get_search_again_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Формируем результаты
+    text = f"🔍 *Результаты поиска:* `{query}`\n"
+    text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"Найдено: *{len(results)}* игроков\n\n"
+    
+    for i, user in enumerate(results, 1):
+        name = format_player_name(user)
+        game_nickname = user.get('game_nickname') or '—'
+        game_id = user.get('game_id') or '—'
+        rating = user.get('rating', 1000)
+        platform = PLATFORMS.get(user.get('platform', 'pc'), user.get('platform', 'pc'))
+        
+        # Статус бана
+        ban_status = " 🚫" if user.get('is_banned') else ""
+        
+        text += f"*{i}.* {name}{ban_status}\n"
+        text += f"   🎮 Ник: `{game_nickname}`\n"
+        text += f"   🆔 ID: `{game_id}`\n"
+        text += f"   ⭐ Рейтинг: *{rating}*\n"
+        text += f"   📱 Платформа: {platform}\n\n"
+    
+    await message.answer(
+        text,
+        reply_markup=get_search_results_keyboard(results),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data.startswith("player:view:"))
+async def view_player_profile(callback: CallbackQuery):
+    """Просмотреть профиль игрока"""
+    user_id = int(callback.data.split(":")[2])
+    
+    user = await db.get_user(user_id)
+    if not user:
+        await callback.answer("Игрок не найден!", show_alert=True)
+        return
+    
+    platform_emoji = "🖥️" if user['platform'] == 'pc' else "📱"
+    name = format_player_name(user)
+    
+    # Игровой ник и ID
+    game_nickname = user.get('game_nickname') or 'Не указан'
+    game_id = user.get('game_id') or 'Не указан'
+    
+    # Статус
+    status_parts = []
+    if user.get('is_banned'):
+        status_parts.append("🚫 Заблокирован")
+    if user.get('is_admin'):
+        status_parts.append("👑 Администратор")
+    elif user.get('is_moderator'):
+        status_parts.append("🛡️ Модератор")
+    
+    status_text = "\n".join(status_parts) if status_parts else ""
+    if status_text:
+        status_text = f"\n{status_text}\n"
+    
+    text = (
+        f"{EMOJI['user']} *ПРОФИЛЬ ИГРОКА*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{EMOJI['crown']} Игрок: {name}\n"
+        f"🆔 Telegram ID: `{user_id}`\n"
+        f"🎮 Игровой ник: *{game_nickname}*\n"
+        f"🆔 Игровой ID: `{game_id}`\n"
+        f"{platform_emoji} Платформа: *{PLATFORMS.get(user['platform'], user['platform'])}*\n"
+        f"{status_text}"
+        f"{format_player_stats(user)}"
+    )
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_player_profile_keyboard(user_id, callback.from_user.id),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "search:again")
+async def search_again(callback: CallbackQuery, state: FSMContext):
+    """Повторить поиск"""
+    await state.set_state(ProfileStates.waiting_for_search_query)
+    
+    await callback.message.edit_text(
+        f"🔍 *Поиск игрока*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Отправьте запрос для поиска:\n\n"
+        f"• Игровой ник\n"
+        f"• Telegram username (с @ или без)\n"
+        f"• Telegram ID (число)\n"
+        f"• Игровой ID\n\n"
+        f"{EMOJI['info']} Для отмены отправьте /cancel",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "search:back")
+async def search_back_to_results(callback: CallbackQuery):
+    """Вернуться к результатам поиска (закрыть профиль)"""
+    await callback.message.delete()
+    await callback.answer()
+
+
+def get_search_again_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для повторного поиска"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text="🔍 Искать снова",
+            callback_data="search:again"
+        )]
+    ])
+
+
+def get_search_results_keyboard(results: list) -> InlineKeyboardMarkup:
+    """Клавиатура с результатами поиска"""
+    buttons = []
+    
+    for user in results[:5]:  # Максимум 5 кнопок
+        name = format_player_name(user)
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"👤 {name}",
+                callback_data=f"player:view:{user['user_id']}"
+            )
+        ])
+    
+    buttons.append([
+        InlineKeyboardButton(
+            text="🔍 Искать снова",
+            callback_data="search:again"
+        )
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_player_profile_keyboard(target_user_id: int, viewer_user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для профиля игрока"""
+    buttons = []
+    
+    # Кнопка истории матчей
+    buttons.append([
+        InlineKeyboardButton(
+            text=f"{EMOJI['chart']} История матчей",
+            callback_data=f"profile:history:{target_user_id}"
+        )
+    ])
+    
+    # Кнопка назад
+    buttons.append([
+        InlineKeyboardButton(
+            text="🔙 Назад",
+            callback_data="search:back"
+        )
+    ])
+    
+    return InlineKeyboardMarkup(inline_keyboard=buttons)

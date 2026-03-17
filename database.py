@@ -448,6 +448,66 @@ async def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 
+async def search_users(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Поиск пользователей по нику, телеграм username, telegram ID или игровому ID.
+    
+    Args:
+        query: Поисковый запрос
+        limit: Максимальное количество результатов
+    
+    Returns:
+        Список найденных пользователей
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Убираем @ если есть
+        clean_query = query.replace("@", "").strip()
+        
+        # Проверяем, является ли запрос числом (telegram ID)
+        is_numeric = clean_query.isdigit()
+        
+        if is_numeric:
+            # Поиск по telegram ID
+            sql_query = """
+                SELECT * FROM users 
+                WHERE user_id = ? OR CAST(user_id AS TEXT) LIKE ?
+                LIMIT ?
+            """
+            async with db.execute(sql_query, (int(clean_query), f"%{clean_query}%", limit)) as cursor:
+                rows = await cursor.fetchall()
+        else:
+            # Поиск по нику, username или игровому ID
+            search_pattern = f"%{clean_query}%"
+            sql_query = """
+                SELECT * FROM users 
+                WHERE username LIKE ? 
+                   OR full_name LIKE ? 
+                   OR game_nickname LIKE ? 
+                   OR game_id LIKE ?
+                ORDER BY 
+                    CASE 
+                        WHEN username = ? THEN 1
+                        WHEN game_nickname = ? THEN 2
+                        WHEN game_id = ? THEN 3
+                        WHEN username LIKE ? THEN 4
+                        WHEN game_nickname LIKE ? THEN 5
+                        ELSE 6
+                    END
+                LIMIT ?
+            """
+            async with db.execute(sql_query, (
+                search_pattern, search_pattern, search_pattern, search_pattern,
+                clean_query, clean_query, clean_query,
+                f"{clean_query}%", f"{clean_query}%",
+                limit
+            )) as cursor:
+                rows = await cursor.fetchall()
+        
+        return [dict(row) for row in rows]
+
+
 # ============ MATCHMAKING QUEUE FUNCTIONS ============
 
 async def join_queue(user_id: int, platform: str, rating: int, party_id: int = None, game_format: str = "5x5") -> bool:

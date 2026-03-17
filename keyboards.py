@@ -317,6 +317,12 @@ def get_admin_menu_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(
+            text="🔍 Поиск игрока",
+            callback_data="search:player"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
             text=f"{EMOJI['chart']} Статистика",
             callback_data="admin:stats"
         )
