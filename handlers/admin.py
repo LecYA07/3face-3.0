@@ -567,7 +567,7 @@ async def add_moderator_command(message: Message):
     if len(args) < 2:
         await message.answer(
             f"{EMOJI['warning']} Укажите пользователя!\n"
-            f"Пример: `/addmod @username`",
+            f"Пример: /addmod @username",
             parse_mode="Markdown"
         )
         return
@@ -580,9 +580,9 @@ async def add_moderator_command(message: Message):
         return
     
     await db.set_user_moderator(user['user_id'], True)
+    username = user.get('username') or 'без username'
     await message.answer(
-        f"{EMOJI['check']} Пользователь `{user['user_id']}` (@{user.get('username', 'unknown')}) назначен модератором.",
-        parse_mode="Markdown"
+        f"{EMOJI['check']} Пользователь {user['user_id']} ({username}) назначен модератором."
     )
 
 
@@ -814,6 +814,219 @@ async def backup_database(message: Message):
             f"{EMOJI['warning']} *Ошибка создания бэкапа!*\n\n"
             f"Причина: `{str(e)}`",
             parse_mode="Markdown"
+        )
+
+
+# ============ UPDATE COMMAND ============
+
+@router.message(F.text.startswith("/update"))
+async def update_bot_command(message: Message):
+    """Обновить бота с GitHub с сохранением БД и конфигов"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    import subprocess
+    import sys
+    
+    await message.answer(
+        f"{EMOJI['gear']} *Начинаю обновление бота...*\n\n"
+        f"1️⃣ Создание бэкапа базы данных...",
+        parse_mode="Markdown"
+    )
+    
+    try:
+        # 1. Создаём бэкап базы данных
+        backup_dir = "backups"
+        if not os.path.exists(backup_dir):
+            os.makedirs(backup_dir)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"backup_before_update_{timestamp}.db"
+        backup_path = os.path.join(backup_dir, backup_filename)
+        shutil.copy2(DATABASE_PATH, backup_path)
+        
+        # Сохраняем .env если есть
+        env_backup = None
+        if os.path.exists(".env"):
+            with open(".env", "r", encoding="utf-8") as f:
+                env_backup = f.read()
+        
+        await message.answer(
+            f"{EMOJI['check']} Бэкап БД создан: {backup_filename}\n\n"
+            f"2️⃣ Получение обновлений с GitHub...",
+            parse_mode="Markdown"
+        )
+        
+        # 2. Git pull
+        git_result = subprocess.run(
+            ["git", "pull", "origin", "main"],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd()
+        )
+        
+        git_output = git_result.stdout + git_result.stderr
+        
+        if git_result.returncode != 0:
+            # Пробуем с --force
+            git_result = subprocess.run(
+                ["git", "fetch", "--all"],
+                capture_output=True,
+                text=True,
+                cwd=os.getcwd()
+            )
+            git_result = subprocess.run(
+                ["git", "reset", "--hard", "origin/main"],
+                capture_output=True,
+                text=True,
+                cwd=os.getcwd()
+            )
+            git_output = git_result.stdout + git_result.stderr
+        
+        # 3. Восстанавливаем .env если был
+        if env_backup:
+            with open(".env", "w", encoding="utf-8") as f:
+                f.write(env_backup)
+        
+        # 4. Восстанавливаем БД
+        if os.path.exists(backup_path):
+            shutil.copy2(backup_path, DATABASE_PATH)
+        
+        await message.answer(
+            f"{EMOJI['check']} Git обновлён\n\n"
+            f"3️⃣ Установка зависимостей...",
+            parse_mode="Markdown"
+        )
+        
+        # 5. Устанавливаем зависимости
+        pip_result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "-q"],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd()
+        )
+        
+        # Определяем что изменилось
+        changes = "Нет изменений" if "Already up to date" in git_output else "Обновлено"
+        
+        await message.answer(
+            f"{EMOJI['check']} *Обновление завершено!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📦 Git: {changes}\n"
+            f"💾 БД сохранена: {backup_filename}\n"
+            f"⚙️ Конфиги сохранены\n"
+            f"📚 Зависимости обновлены\n\n"
+            f"{EMOJI['warning']} *Для применения изменений требуется перезапуск!*\n\n"
+            f"Используйте /restart для перезапуска бота\n"
+            f"или перезапустите контейнер вручную.",
+            parse_mode="Markdown"
+        )
+        
+    except Exception as e:
+        await message.answer(
+            f"{EMOJI['warning']} *Ошибка обновления!*\n\n"
+            f"Причина: {str(e)}\n\n"
+            f"База данных и конфиги сохранены в папке backups/",
+            parse_mode="Markdown"
+        )
+
+
+@router.message(F.text.startswith("/restart"))
+async def restart_bot_command(message: Message):
+    """Перезапустить бота"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    await message.answer(
+        f"{EMOJI['gear']} *Перезапуск бота...*\n\n"
+        f"Бот будет перезапущен через 3 секунды.",
+        parse_mode="Markdown"
+    )
+    
+    import asyncio
+    import sys
+    
+    await asyncio.sleep(3)
+    
+    # Перезапускаем процесс
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+@router.message(F.text.startswith("/gitlog"))
+async def git_log_command(message: Message):
+    """Показать последние коммиты"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    import subprocess
+    
+    try:
+        result = subprocess.run(
+            ["git", "log", "--oneline", "-10"],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd()
+        )
+        
+        if result.returncode == 0:
+            log_output = result.stdout.strip()
+            await message.answer(
+                f"{EMOJI['info']} *Последние 10 коммитов:*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"```\n{log_output}\n```",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.answer(
+                f"{EMOJI['warning']} Ошибка: {result.stderr}",
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        await message.answer(
+            f"{EMOJI['warning']} Ошибка: {str(e)}"
+        )
+
+
+@router.message(F.text.startswith("/gitstatus"))
+async def git_status_command(message: Message):
+    """Показать статус Git"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    import subprocess
+    
+    try:
+        result = subprocess.run(
+            ["git", "status", "--short"],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd()
+        )
+        
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            cwd=os.getcwd()
+        )
+        
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+        status = result.stdout.strip() if result.stdout.strip() else "Нет изменений"
+        
+        await message.answer(
+            f"{EMOJI['info']} *Git Status*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🌿 Ветка: {branch}\n\n"
+            f"📝 Изменения:\n```\n{status}\n```",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.answer(
+            f"{EMOJI['warning']} Ошибка: {str(e)}"
         )
 
 

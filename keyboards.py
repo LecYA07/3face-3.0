@@ -109,6 +109,15 @@ def get_lobby_keyboard(lobby_id: int, is_creator: bool = False, is_full: bool = 
             )
         )
     
+    # Кнопка "Поиск матча" для создателя (независимо от заполненности лобби)
+    if is_creator:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['search']} Поиск матча", 
+                callback_data=f"lobby:search_match:{lobby_id}"
+            )
+        )
+    
     if is_creator:
         builder.row(
             InlineKeyboardButton(

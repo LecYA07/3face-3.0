@@ -398,6 +398,96 @@ async def invite_to_lobby(callback: CallbackQuery):
     await callback.answer()
 
 
+@router.callback_query(F.data.startswith("lobby:search_match:"))
+async def start_lobby_search_match(callback: CallbackQuery):
+    """Начать поиск матча для всех участников лобби"""
+    lobby_id = int(callback.data.split(":")[2])
+    user_id = callback.from_user.id
+    
+    lobby = await db.get_lobby(lobby_id)
+    if not lobby:
+        await callback.answer("Лобби не найдено!", show_alert=True)
+        return
+    
+    # Только создатель может начать поиск
+    if lobby['creator_id'] != user_id:
+        await callback.answer("Только создатель лобби может начать поиск матча!", show_alert=True)
+        return
+    
+    # Проверяем что лобби в статусе ожидания
+    if lobby['status'] != 'waiting':
+        await callback.answer("Лобби уже в игре или закрыто!", show_alert=True)
+        return
+    
+    # Получаем игроков лобби
+    players = await db.get_lobby_players(lobby_id)
+    if not players:
+        await callback.answer("В лобби нет игроков!", show_alert=True)
+        return
+    
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    platform = lobby['platform']
+    
+    # Проверяем что никто не в очереди и не в активном матче
+    for player in players:
+        if await db.is_in_queue(player['user_id']):
+            player_name = format_player_name(player)
+            await callback.answer(f"{player_name} уже в очереди поиска!", show_alert=True)
+            return
+        if await db.is_user_in_active_or_pending_match(player['user_id']):
+            player_name = format_player_name(player)
+            await callback.answer(f"{player_name} уже в активном матче!", show_alert=True)
+            return
+    
+    # Удаляем лобби (освобождаем игроков)
+    await db.delete_lobby(lobby_id)
+    
+    # Добавляем всех игроков в очередь поиска
+    for player in players:
+        user = await db.get_user(player['user_id'])
+        if user and not user.get('is_banned'):
+            party_id = await db.get_user_party(player['user_id'])
+            await db.join_queue(player['user_id'], platform, user['rating'], party_id, game_format)
+    
+    # Уведомляем создателя
+    queue_count = await db.get_queue_count(platform, game_format)
+    
+    from keyboards import get_queue_keyboard
+    from utils import format_queue_status
+    
+    await callback.message.edit_text(
+        f"{EMOJI['check']} *Поиск матча начат!*\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
+        f"{EMOJI['users']} Игроков из лобби добавлено в поиск: *{len(players)}*\n\n"
+        + format_queue_status(queue_count, platform, game_format),
+        reply_markup=get_queue_keyboard(game_format),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Все игроки добавлены в очередь!")
+    
+    # Уведомляем остальных участников лобби о начале поиска
+    for player in players:
+        if player['user_id'] != user_id:
+            try:
+                await callback.bot.send_message(
+                    player['user_id'],
+                    f"{EMOJI['search']} *Начат поиск матча!*\n\n"
+                    f"Создатель лобби запустил поиск матча.\n\n"
+                    f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
+                    f"{EMOJI['users']} В очереди: *{queue_count}* игроков\n\n"
+                    f"Ожидайте подбора соперников...",
+                    reply_markup=get_queue_keyboard(game_format),
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to notify player {player['user_id']} about search start: {e}")
+    
+    # Пытаемся создать матч если достаточно игроков
+    from handlers.match import try_create_match_from_queue
+    await try_create_match_from_queue(callback.bot, platform, game_format)
+
+
 @router.callback_query(F.data.startswith("lobby:select_map:"))
 async def select_map(callback: CallbackQuery):
     """Выбор карты для матча"""
