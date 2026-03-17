@@ -55,8 +55,13 @@ def calculate_rating_change(winner_team_rating: int, loser_team_rating: int,
     return change
 
 
-def balance_teams(players: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def balance_teams(players: List[Dict[str, Any]], game_format: str = "5x5") -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Разделить игроков на две сбалансированные команды."""
+    from config import GAME_FORMATS
+    
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    team_size = format_data['team_size']
+    
     parties = {}
     solo_players = []
     
@@ -79,11 +84,11 @@ def balance_teams(players: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], 
         team1_rating = calculate_team_rating(team1)
         team2_rating = calculate_team_rating(team2)
         
-        if team1_rating <= team2_rating and len(team1) + len(party) <= 5:
+        if team1_rating <= team2_rating and len(team1) + len(party) <= team_size:
             team1.extend(party)
-        elif len(team2) + len(party) <= 5:
+        elif len(team2) + len(party) <= team_size:
             team2.extend(party)
-        elif len(team1) + len(party) <= 5:
+        elif len(team1) + len(party) <= team_size:
             team1.extend(party)
     
     solo_players.sort(key=lambda p: p.get('rating', 1000), reverse=True)
@@ -92,9 +97,9 @@ def balance_teams(players: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], 
         team1_rating = calculate_team_rating(team1) if team1 else 0
         team2_rating = calculate_team_rating(team2) if team2 else 0
         
-        if len(team1) < 5 and (team1_rating <= team2_rating or len(team2) >= 5):
+        if len(team1) < team_size and (team1_rating <= team2_rating or len(team2) >= team_size):
             team1.append(player)
-        elif len(team2) < 5:
+        elif len(team2) < team_size:
             team2.append(player)
         else:
             team1.append(player)
@@ -111,9 +116,15 @@ def can_match_players(players: List[Dict[str, Any]], max_rating_diff: int = 300)
 
 
 def find_best_match_group(queue_players: List[Dict[str, Any]], 
-                          max_rating_diff: int = 300) -> List[Dict[str, Any]]:
-    """Найти лучшую группу из 10 игроков для матча."""
-    if len(queue_players) < 10:
+                          max_rating_diff: int = 300,
+                          game_format: str = "5x5") -> List[Dict[str, Any]]:
+    """Найти лучшую группу игроков для матча в зависимости от формата."""
+    from config import GAME_FORMATS
+    
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    
+    if len(queue_players) < lobby_size:
         return []
     
     parties = {}
@@ -132,17 +143,17 @@ def find_best_match_group(queue_players: List[Dict[str, Any]],
     selected = []
     
     for party_players in parties.values():
-        if len(selected) + len(party_players) <= 10:
+        if len(selected) + len(party_players) <= lobby_size:
             selected.extend(party_players)
     
-    remaining_slots = 10 - len(selected)
+    remaining_slots = lobby_size - len(selected)
     if remaining_slots > 0 and len(solo_players) >= remaining_slots:
         if selected:
             avg_rating = sum(p.get('rating', 1000) for p in selected) // len(selected)
             solo_players.sort(key=lambda p: abs(p.get('rating', 1000) - avg_rating))
         selected.extend(solo_players[:remaining_slots])
     
-    if len(selected) == 10:
+    if len(selected) == lobby_size:
         ratings = [p.get('rating', 1000) for p in selected]
         if max(ratings) - min(ratings) <= max_rating_diff:
             return selected
@@ -233,8 +244,13 @@ def format_player_stats(player: Dict[str, Any]) -> str:
 
 def format_lobby_info(lobby: Dict[str, Any], players: List[Dict[str, Any]], creator_name: str) -> str:
     """Форматировать информацию о лобби"""
+    from config import GAME_FORMATS
+    
     platform_emoji = "🖥️" if lobby['platform'] == 'pc' else "📱"
     player_count = len(players)
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
     
     players_list = ""
     for i, player in enumerate(players, 1):
@@ -249,9 +265,10 @@ def format_lobby_info(lobby: Dict[str, Any], players: List[Dict[str, Any]], crea
     return (
         f"\n{EMOJI['users']} *ЛОББИ #{lobby['lobby_id']}*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"{EMOJI['crown']} Создатель: {creator_name}\n"
         f"{platform_emoji} Платформа: *{lobby['platform'].upper()}*\n"
-        f"{EMOJI['users']} Игроки: *{player_count}/10*\n\n"
+        f"{EMOJI['users']} Игроки: *{player_count}/{lobby_size}*\n\n"
         f"{EMOJI['target']} *Участники:*\n"
         f"{players_list}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -261,8 +278,13 @@ def format_lobby_info(lobby: Dict[str, Any], players: List[Dict[str, Any]], crea
 def format_match_info(match: Dict[str, Any], team1: List[Dict[str, Any]], 
                       team2: List[Dict[str, Any]]) -> str:
     """Форматировать информацию о матче"""
+    from config import GAME_FORMATS
+    
     team1_rating = match.get('team1_avg_rating') or calculate_team_rating(team1)
     team2_rating = match.get('team2_avg_rating') or calculate_team_rating(team2)
+    
+    game_format = match.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
     
     all_players = team1 + team2
     host = determine_host(all_players)
@@ -288,6 +310,7 @@ def format_match_info(match: Dict[str, Any], team1: List[Dict[str, Any]],
     return (
         f"\n{EMOJI['sword']} *МАТЧ #{match['match_id']}*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"{status_emoji} Статус: *{match['status'].upper()}*\n"
         f"{EMOJI['map']} Карта: *{match['map_name']}*\n\n"
         f"🎖️ *ХОСТЕР:* {host_name}\n"
@@ -496,16 +519,19 @@ def format_history_entry(match: Dict[str, Any], user_team: int) -> str:
     )
 
 
-def format_queue_status(queue_count: int, platform: str) -> str:
+def format_queue_status(queue_count: int, platform: str, game_format: str = "5x5") -> str:
     """Форматировать статус очереди"""
-    from config import PLATFORMS
+    from config import PLATFORMS, GAME_FORMATS
     platform_name = PLATFORMS.get(platform, platform)
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
     
     return (
         f"\n{EMOJI['search']} *ПОИСК ИГРЫ*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"{EMOJI['queue']} В очереди: *{queue_count}* игроков\n"
         f"{platform_name}\n\n"
-        f"{EMOJI['info']} Для матча нужно *10* игроков\n"
+        f"{EMOJI['info']} Для матча нужно *{lobby_size}* игроков\n"
         f"{EMOJI['clock']} Подбор по рейтингу...\n"
     )

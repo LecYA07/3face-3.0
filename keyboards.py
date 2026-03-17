@@ -3,7 +3,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from config import EMOJI, MAPS, PLATFORMS, WEBAPP_URL
+from config import EMOJI, MAPS, PLATFORMS, WEBAPP_URL, GAME_FORMATS
 
 
 def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
@@ -38,15 +38,38 @@ def get_platform_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_queue_keyboard() -> InlineKeyboardMarkup:
+def get_queue_keyboard(game_format: str = "5x5") -> InlineKeyboardMarkup:
     """Клавиатура очереди поиска"""
     builder = InlineKeyboardBuilder()
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
     builder.row(
         InlineKeyboardButton(
-            text=f"{EMOJI['cross']} Отменить поиск",
+            text=f"{EMOJI['cross']} Отменить поиск ({format_data['name']})",
             callback_data="queue:leave"
         )
     )
+    return builder.as_markup()
+
+
+def get_game_format_keyboard(action: str = "queue") -> InlineKeyboardMarkup:
+    """Клавиатура выбора формата игры (5x5 или 2x2)"""
+    builder = InlineKeyboardBuilder()
+    
+    for format_key, format_data in GAME_FORMATS.items():
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{format_data['emoji']} {format_data['name']}",
+                callback_data=f"{action}:format:{format_key}"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="play:back"
+        )
+    )
+    
     return builder.as_markup()
 
 
@@ -56,13 +79,13 @@ def get_play_menu_keyboard() -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(
             text=f"{EMOJI['search']} Найти игру", 
-            callback_data="queue:join"
+            callback_data="queue:select_format"
         )
     )
     builder.row(
         InlineKeyboardButton(
             text=f"{EMOJI['users']} Создать лобби (приватное)", 
-            callback_data="play:create_lobby"
+            callback_data="lobby:select_format"
         )
     )
     builder.row(
@@ -116,9 +139,12 @@ def get_lobbies_list_keyboard(lobbies: list, platform: str) -> InlineKeyboardMar
     builder = InlineKeyboardBuilder()
     
     for lobby in lobbies[:10]:  # Максимум 10 лобби
+        game_format = lobby.get('game_format', '5x5')
+        format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+        lobby_size = format_data['lobby_size']
         builder.row(
             InlineKeyboardButton(
-                text=f"{EMOJI['users']} Лобби #{lobby['lobby_id']} ({lobby.get('player_count', 0)}/10)",
+                text=f"{format_data['emoji']} Лобби #{lobby['lobby_id']} [{format_data['name']}] ({lobby.get('player_count', 0)}/{lobby_size})",
                 callback_data=f"lobby:join:{lobby['lobby_id']}"
             )
         )
@@ -126,7 +152,7 @@ def get_lobbies_list_keyboard(lobbies: list, platform: str) -> InlineKeyboardMar
     builder.row(
         InlineKeyboardButton(
             text=f"{EMOJI['gear']} Создать своё лобби",
-            callback_data=f"play:create_lobby:{platform}"
+            callback_data=f"lobby:select_format"
         )
     )
     

@@ -8,10 +8,10 @@ import logging
 import database as db
 from keyboards import (
     get_lobby_keyboard, get_lobbies_list_keyboard, 
-    get_maps_keyboard, get_platform_keyboard
+    get_maps_keyboard, get_platform_keyboard, get_game_format_keyboard
 )
 from utils import format_lobby_info, format_player_name, get_random_map
-from config import EMOJI, PLATFORMS
+from config import EMOJI, PLATFORMS, GAME_FORMATS
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -41,8 +41,12 @@ async def show_lobbies_menu(message: Message):
         creator = await db.get_user(lobby['creator_id'])
         creator_name = format_player_name(creator) if creator else "Неизвестно"
         
+        game_format = lobby.get('game_format', '5x5')
+        format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+        lobby_size = format_data['lobby_size']
+        
         is_creator = lobby['creator_id'] == message.from_user.id
-        is_full = len(players) >= 10
+        is_full = len(players) >= lobby_size
         
         await message.answer(
             format_lobby_info(lobby, players, creator_name),
@@ -76,9 +80,61 @@ async def show_lobbies_menu(message: Message):
         )
 
 
+@router.callback_query(F.data == "lobby:select_format")
+async def select_lobby_format(callback: CallbackQuery):
+    """Показать выбор формата для создания лобби"""
+    user = await db.get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("Сначала зарегистрируйтесь!", show_alert=True)
+        return
+    
+    if user.get('is_banned'):
+        await callback.answer("Вы заблокированы!", show_alert=True)
+        return
+    
+    active_lobby = await db.get_user_active_lobby(callback.from_user.id)
+    if active_lobby:
+        await callback.answer("Вы уже в лобби!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        f"{EMOJI['game']} *Создание лобби*\n\n"
+        f"Выберите формат игры:",
+        reply_markup=get_game_format_keyboard("lobby"),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("lobby:format:"))
+async def create_lobby_with_format(callback: CallbackQuery):
+    """Создать лобби с выбранным форматом"""
+    game_format = callback.data.split(":")[2]
+    
+    if game_format not in GAME_FORMATS:
+        await callback.answer("Неизвестный формат!", show_alert=True)
+        return
+    
+    user = await db.get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("Сначала зарегистрируйтесь!", show_alert=True)
+        return
+    
+    if user.get('is_banned'):
+        await callback.answer("Вы заблокированы!", show_alert=True)
+        return
+    
+    active_lobby = await db.get_user_active_lobby(callback.from_user.id)
+    if active_lobby:
+        await callback.answer("Вы уже в лобби!", show_alert=True)
+        return
+    
+    await _create_lobby(callback, user.get('platform', 'pc'), game_format)
+
+
 @router.callback_query(F.data == "play:create_lobby")
 async def create_lobby_start(callback: CallbackQuery, state: FSMContext):
-    """Начать создание лобби - выбор платформы"""
+    """Начать создание лобби - выбор платформы (для обратной совместимости)"""
     user = await db.get_user(callback.from_user.id)
     if not user:
         await callback.answer("Сначала зарегистрируйтесь!", show_alert=True)
@@ -118,15 +174,27 @@ async def create_lobby_select_platform(callback: CallbackQuery, state: FSMContex
     await _create_lobby(callback, platform)
 
 
-async def _create_lobby(callback: CallbackQuery, platform: str):
+async def _create_lobby(callback: CallbackQuery, platform: str, game_format: str = "5x5"):
     """Создать лобби"""
     user_id = callback.from_user.id
+    
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
     
     # Проверяем пати пользователя
     party_id = await db.get_user_party(user_id)
     
+    # Если в пати, проверяем размер
+    if party_id:
+        party_members = await db.get_party_members(party_id)
+        if len(party_members) > format_data['team_size']:
+            await callback.answer(
+                f"Ваша пати слишком большая для формата {format_data['name']}!",
+                show_alert=True)
+            return
+    
     # Создаём лобби
-    lobby_id = await db.create_lobby(user_id, platform)
+    lobby_id = await db.create_lobby(user_id, platform, game_format=game_format)
     
     # Добавляем создателя в лобби
     await db.join_lobby(lobby_id, user_id, party_id)
@@ -147,7 +215,7 @@ async def _create_lobby(callback: CallbackQuery, platform: str):
     await callback.message.edit_text(
         f"{EMOJI['check']} *Лобби создано!*\n\n" +
         format_lobby_info(lobby, players, creator_name),
-        reply_markup=get_lobby_keyboard(lobby_id, is_creator=True, is_full=len(players) >= 10),
+        reply_markup=get_lobby_keyboard(lobby_id, is_creator=True, is_full=len(players) >= lobby_size),
         parse_mode="Markdown"
     )
     await callback.answer("Лобби успешно создано!")
@@ -206,9 +274,13 @@ async def join_lobby(callback: CallbackQuery):
         await callback.answer("Лобби уже началось или закрыто!", show_alert=True)
         return
     
-    # Проверяем количество игроков
+    # Проверяем количество игроков с учётом формата
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    
     player_count = await db.get_lobby_player_count(lobby_id)
-    if player_count >= 10:
+    if player_count >= lobby_size:
         await callback.answer("Лобби заполнено!", show_alert=True)
         return
     
@@ -234,7 +306,7 @@ async def join_lobby(callback: CallbackQuery):
         current_count = await db.get_lobby_player_count(lobby_id)
         
         for member in party_members:
-            if member['user_id'] != user_id and current_count < 10:
+            if member['user_id'] != user_id and current_count < lobby_size:
                 joined = await db.join_lobby(lobby_id, member['user_id'], party_id)
                 if joined:
                     current_count += 1
@@ -246,7 +318,7 @@ async def join_lobby(callback: CallbackQuery):
     creator_name = format_player_name(creator)
     
     is_creator = lobby['creator_id'] == user_id
-    is_full = len(players) >= 10
+    is_full = len(players) >= lobby_size
     
     # Отвечаем присоединившемуся игроку
     await callback.message.edit_text(
@@ -340,9 +412,13 @@ async def select_map(callback: CallbackQuery):
         await callback.answer("Только создатель может выбрать карту!", show_alert=True)
         return
     
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    
     player_count = await db.get_lobby_player_count(lobby_id)
-    if player_count < 10:
-        await callback.answer(f"Нужно 10 игроков! Сейчас: {player_count}", show_alert=True)
+    if player_count < lobby_size:
+        await callback.answer(f"Нужно {lobby_size} игроков! Сейчас: {player_count}", show_alert=True)
         return
     
     await callback.message.edit_text(
@@ -387,9 +463,14 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
         await callback.answer("Лобби не найдено!", show_alert=True)
         return
     
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    team_size = format_data['team_size']
+    
     players = await db.get_lobby_players(lobby_id)
-    if len(players) < 10:
-        await callback.answer("Недостаточно игроков!", show_alert=True)
+    if len(players) < lobby_size:
+        await callback.answer(f"Недостаточно игроков! Нужно {lobby_size}.", show_alert=True)
         return
     
     # Проверяем что никто не в активном матче
@@ -398,10 +479,10 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
             await callback.answer("Один из игроков уже в матче!", show_alert=True)
             return
     
-    # Балансируем команды
-    team1, team2 = balance_teams(players)
+    # Балансируем команды с учётом формата
+    team1, team2 = balance_teams(players, game_format)
     
-    if len(team1) != 5 or len(team2) != 5:
+    if len(team1) != team_size or len(team2) != team_size:
         await callback.answer("Ошибка балансировки команд!", show_alert=True)
         return
     
@@ -420,7 +501,8 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
         team1_start_side=team1_side,
         team2_start_side=team2_side,
         team1_avg_rating=team1_avg,
-        team2_avg_rating=team2_avg
+        team2_avg_rating=team2_avg,
+        game_format=game_format
     )
     
     # Добавляем игроков в матч
@@ -436,8 +518,9 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
     # Отправляем ready check всем игрокам
     ready_text = (
         f"{EMOJI['fire']} *МАТЧ НАЙДЕН!*\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"{EMOJI['map']} Карта: *{map_name}*\n"
-        f"{EMOJI['users']} Игроков: *10*\n\n"
+        f"{EMOJI['users']} Игроков: *{lobby_size}*\n\n"
         f"{EMOJI['clock']} У вас есть *{READY_CHECK_TIMEOUT} секунд* чтобы подтвердить готовность!\n\n"
         f"Нажмите кнопку *«Готов»*, чтобы начать матч.")
     
@@ -456,24 +539,25 @@ async def _start_match(callback: CallbackQuery, lobby_id: int, map_name: str):
             logger.warning(f"Failed to notify {player['user_id']}: {e}")
     
     # Если не удалось уведомить всех, отменяем
-    if successful < 10:
-        await handle_ready_check_failed(callback.bot, match_id, reason="notification_failed")
+    if successful < lobby_size:
+        await handle_ready_check_failed(callback.bot, match_id, reason="notification_failed", game_format=game_format)
         await callback.answer("Не удалось уведомить всех игроков!", show_alert=True)
         return
     
     # Запускаем таймер таймаута
-    task = asyncio.create_task(ready_check_timeout_handler(callback.bot, match_id))
+    task = asyncio.create_task(ready_check_timeout_handler(callback.bot, match_id, game_format))
     ready_check_timers[match_id] = task
     
     await callback.message.edit_text(
         f"{EMOJI['clock']} *Ожидание подтверждения готовности...*\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"Все игроки должны подтвердить готовность в течение {READY_CHECK_TIMEOUT} секунд.\n\n"
         f"{EMOJI['map']} Карта: *{map_name}*",
         parse_mode="Markdown"
     )
     
     await callback.answer("Ready check отправлен всем игрокам!")
-    logger.info(f"Match {match_id} created from lobby {lobby_id} with ready check")
+    logger.info(f"Match {match_id} ({game_format}) created from lobby {lobby_id} with ready check")
 
 
 async def notify_lobby_players_update(
@@ -501,7 +585,11 @@ async def notify_lobby_players_update(
     if not existing_player_ids:
         return
     
-    is_full = len(players) >= 10
+    game_format = lobby.get('game_format', '5x5')
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    lobby_size = format_data['lobby_size']
+    
+    is_full = len(players) >= lobby_size
     
     # Получаем имена новых игроков для уведомления
     new_players_names = []

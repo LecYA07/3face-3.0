@@ -50,6 +50,7 @@ async def init_db():
                 lobby_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 creator_id INTEGER,
                 platform TEXT DEFAULT 'pc',
+                game_format TEXT DEFAULT '5x5',
                 status TEXT DEFAULT 'waiting',
                 is_private INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -98,6 +99,7 @@ async def init_db():
                 match_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 lobby_id INTEGER,
                 platform TEXT,
+                game_format TEXT DEFAULT '5x5',
                 map_name TEXT,
                 status TEXT DEFAULT 'pending',
                 team1_score INTEGER DEFAULT 0,
@@ -187,6 +189,24 @@ async def init_db():
         # Миграция: добавляем столбец photo_file_id если его нет
         try:
             await db.execute("ALTER TABLE tickets ADD COLUMN photo_file_id TEXT DEFAULT NULL")
+        except Exception:
+            pass  # Столбец уже существует
+        
+        # Миграция: добавляем столбец game_format в lobbies если его нет
+        try:
+            await db.execute("ALTER TABLE lobbies ADD COLUMN game_format TEXT DEFAULT '5x5'")
+        except Exception:
+            pass  # Столбец уже существует
+        
+        # Миграция: добавляем столбец game_format в matches если его нет
+        try:
+            await db.execute("ALTER TABLE matches ADD COLUMN game_format TEXT DEFAULT '5x5'")
+        except Exception:
+            pass  # Столбец уже существует
+        
+        # Миграция: добавляем столбец game_format в matchmaking_queue если его нет
+        try:
+            await db.execute("ALTER TABLE matchmaking_queue ADD COLUMN game_format TEXT DEFAULT '5x5'")
         except Exception:
             pass  # Столбец уже существует
 
@@ -373,14 +393,14 @@ async def get_user_by_username(username: str) -> Optional[Dict[str, Any]]:
 
 # ============ MATCHMAKING QUEUE FUNCTIONS ============
 
-async def join_queue(user_id: int, platform: str, rating: int, party_id: int = None) -> bool:
+async def join_queue(user_id: int, platform: str, rating: int, party_id: int = None, game_format: str = "5x5") -> bool:
     """Добавить игрока в очередь поиска"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         try:
             await db.execute("""
-                INSERT OR REPLACE INTO matchmaking_queue (user_id, platform, rating, party_id, joined_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (user_id, platform, rating, party_id, datetime.now()))
+                INSERT OR REPLACE INTO matchmaking_queue (user_id, platform, rating, party_id, game_format, joined_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (user_id, platform, rating, party_id, game_format, datetime.now()))
             await db.commit()
             return True
         except Exception:
@@ -404,8 +424,8 @@ async def is_in_queue(user_id: int) -> bool:
             return await cursor.fetchone() is not None
 
 
-async def get_queue_players(platform: str, min_rating: int = None, max_rating: int = None) -> List[Dict[str, Any]]:
-    """Получить игроков из очереди с фильтром по рейтингу"""
+async def get_queue_players(platform: str, game_format: str = "5x5", min_rating: int = None, max_rating: int = None) -> List[Dict[str, Any]]:
+    """Получить игроков из очереди с фильтром по рейтингу и формату"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         
@@ -414,34 +434,45 @@ async def get_queue_players(platform: str, min_rating: int = None, max_rating: i
                 SELECT mq.*, u.username, u.full_name
                 FROM matchmaking_queue mq
                 JOIN users u ON mq.user_id = u.user_id
-                WHERE mq.platform = ? AND mq.rating BETWEEN ? AND ?
+                WHERE mq.platform = ? AND mq.game_format = ? AND mq.rating BETWEEN ? AND ?
                 ORDER BY mq.joined_at
             """
-            async with db.execute(query, (platform, min_rating, max_rating)) as cursor:
+            async with db.execute(query, (platform, game_format, min_rating, max_rating)) as cursor:
                 rows = await cursor.fetchall()
         else:
             query = """
                 SELECT mq.*, u.username, u.full_name
                 FROM matchmaking_queue mq
                 JOIN users u ON mq.user_id = u.user_id
-                WHERE mq.platform = ?
+                WHERE mq.platform = ? AND mq.game_format = ?
                 ORDER BY mq.joined_at
             """
-            async with db.execute(query, (platform,)) as cursor:
+            async with db.execute(query, (platform, game_format)) as cursor:
                 rows = await cursor.fetchall()
         
         return [dict(row) for row in rows]
 
 
-async def get_queue_count(platform: str) -> int:
+async def get_queue_count(platform: str, game_format: str = "5x5") -> int:
     """Получить количество игроков в очереди"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         async with db.execute(
-            "SELECT COUNT(*) FROM matchmaking_queue WHERE platform = ?", 
-            (platform,)
+            "SELECT COUNT(*) FROM matchmaking_queue WHERE platform = ? AND game_format = ?", 
+            (platform, game_format)
         ) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else 0
+
+
+async def get_user_queue_format(user_id: int) -> Optional[str]:
+    """Получить формат игры, в очереди которого находится игрок"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute(
+            "SELECT game_format FROM matchmaking_queue WHERE user_id = ?", 
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
 
 
 async def clear_queue_for_users(user_ids: List[int]) -> None:
@@ -454,13 +485,13 @@ async def clear_queue_for_users(user_ids: List[int]) -> None:
 
 # ============ LOBBY FUNCTIONS ============
 
-async def create_lobby(creator_id: int, platform: str, is_private: bool = False) -> int:
+async def create_lobby(creator_id: int, platform: str, is_private: bool = False, game_format: str = "5x5") -> int:
     """Создать лобби"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute("""
-            INSERT INTO lobbies (creator_id, platform, status, is_private)
-            VALUES (?, ?, 'waiting', ?)
-        """, (creator_id, platform, 1 if is_private else 0))
+            INSERT INTO lobbies (creator_id, platform, game_format, status, is_private)
+            VALUES (?, ?, ?, 'waiting', ?)
+        """, (creator_id, platform, game_format, 1 if is_private else 0))
         lobby_id = cursor.lastrowid
         await db.commit()
         return lobby_id
@@ -691,15 +722,16 @@ async def delete_party(party_id: int) -> None:
 
 async def create_match(lobby_id: int, platform: str, map_name: str, 
                        team1_start_side: str, team2_start_side: str,
-                       team1_avg_rating: int = 0, team2_avg_rating: int = 0) -> int:
+                       team1_avg_rating: int = 0, team2_avg_rating: int = 0,
+                       game_format: str = "5x5") -> int:
     """Создать матч"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute("""
             INSERT INTO matches (lobby_id, platform, map_name, team1_start_side, team2_start_side, 
-                                team1_avg_rating, team2_avg_rating, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
+                                team1_avg_rating, team2_avg_rating, game_format, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
         """, (lobby_id, platform, map_name, team1_start_side, team2_start_side, 
-              team1_avg_rating, team2_avg_rating))
+              team1_avg_rating, team2_avg_rating, game_format))
         match_id = cursor.lastrowid
         await db.commit()
         return match_id
@@ -707,15 +739,16 @@ async def create_match(lobby_id: int, platform: str, map_name: str,
 
 async def create_match_pending(lobby_id: int, platform: str, map_name: str, 
                                team1_start_side: str, team2_start_side: str,
-                               team1_avg_rating: int = 0, team2_avg_rating: int = 0) -> int:
+                               team1_avg_rating: int = 0, team2_avg_rating: int = 0,
+                               game_format: str = "5x5") -> int:
     """Создать матч в статусе ожидания ready check"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute("""
             INSERT INTO matches (lobby_id, platform, map_name, team1_start_side, team2_start_side, 
-                                team1_avg_rating, team2_avg_rating, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                                team1_avg_rating, team2_avg_rating, game_format, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
         """, (lobby_id, platform, map_name, team1_start_side, team2_start_side, 
-              team1_avg_rating, team2_avg_rating))
+              team1_avg_rating, team2_avg_rating, game_format))
         match_id = cursor.lastrowid
         await db.commit()
         return match_id
@@ -1045,16 +1078,24 @@ async def try_start_match_atomically(match_id: int) -> bool:
     Это защищает от race condition когда несколько игроков одновременно подтверждают готовность.
     """
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        # Проверяем что матч в статусе pending и все игроки готовы
+        # Проверяем что матч в статусе pending и получаем формат
+        db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT status FROM matches WHERE match_id = ?", 
+            "SELECT status, game_format FROM matches WHERE match_id = ?", 
             (match_id,)
         ) as cursor:
             row = await cursor.fetchone()
-            if not row or row[0] != 'pending':
+            if not row or row['status'] != 'pending':
                 return False  # Матч уже не pending
+            
+            game_format = row['game_format'] or '5x5'
         
-        # Проверяем что все 10 игроков готовы
+        # Определяем размер матча по формату
+        from config import GAME_FORMATS
+        format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+        match_size = format_data['match_size']
+        
+        # Проверяем что все игроки готовы (количество зависит от формата)
         async with db.execute("""
             SELECT 
                 COUNT(*) as total,
@@ -1063,7 +1104,7 @@ async def try_start_match_atomically(match_id: int) -> bool:
             WHERE match_id = ?
         """, (match_id,)) as cursor:
             row = await cursor.fetchone()
-            if not row or row[0] != 10 or row[1] != 10:
+            if not row or row['total'] != match_size or row['ready_count'] != match_size:
                 return False  # Не все готовы или неправильное количество игроков
         
         # Атомарно обновляем статус (UPDATE вернёт 0 строк если статус уже изменился)
@@ -1085,16 +1126,24 @@ async def set_player_ready_and_check(match_id: int, user_id: int) -> Dict[str, A
     Возвращает словарь с информацией о статусе ready check.
     """
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        # Проверяем статус матча
+        db.row_factory = aiosqlite.Row
+        
+        # Проверяем статус матча и получаем формат
         async with db.execute(
-            "SELECT status FROM matches WHERE match_id = ?", 
+            "SELECT status, game_format FROM matches WHERE match_id = ?", 
             (match_id,)
         ) as cursor:
             row = await cursor.fetchone()
             if not row:
                 return {'success': False, 'error': 'match_not_found'}
-            if row[0] != 'pending':
-                return {'success': False, 'error': 'match_not_pending', 'status': row[0]}
+            if row['status'] != 'pending':
+                return {'success': False, 'error': 'match_not_pending', 'status': row['status']}
+            game_format = row['game_format'] or '5x5'
+        
+        # Получаем размер матча для данного формата
+        from config import GAME_FORMATS
+        format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+        match_size = format_data['match_size']
         
         # Проверяем что игрок в этом матче
         async with db.execute(
@@ -1104,7 +1153,7 @@ async def set_player_ready_and_check(match_id: int, user_id: int) -> Dict[str, A
             row = await cursor.fetchone()
             if not row:
                 return {'success': False, 'error': 'player_not_in_match'}
-            if row[0] == 1:
+            if row['is_ready'] == 1:
                 return {'success': False, 'error': 'already_ready'}
         
         # Устанавливаем готовность
@@ -1123,8 +1172,8 @@ async def set_player_ready_and_check(match_id: int, user_id: int) -> Dict[str, A
             WHERE match_id = ?
         """, (match_id,)) as cursor:
             row = await cursor.fetchone()
-            total = row[0]
-            ready_count = row[1]
+            total = row['total']
+            ready_count = row['ready_count']
         
         await db.commit()
         
@@ -1132,7 +1181,7 @@ async def set_player_ready_and_check(match_id: int, user_id: int) -> Dict[str, A
             'success': True,
             'ready_count': ready_count,
             'total_count': total,
-            'all_ready': ready_count == total and total == 10
+            'all_ready': ready_count == total and total == match_size
         }
 
 

@@ -17,7 +17,7 @@ from utils import (
     balance_teams, assign_sides, get_random_map, calculate_team_rating,
     find_best_match_group, format_player_name
 )
-from config import EMOJI, MAX_RATING_DIFF, LOBBY_SIZE, READY_CHECK_TIMEOUT
+from config import EMOJI, MAX_RATING_DIFF, LOBBY_SIZE, READY_CHECK_TIMEOUT, GAME_FORMATS
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -32,7 +32,9 @@ class MatchStates(StatesGroup):
 
 @router.message(F.text.contains("Найти игру"))
 async def find_game_button(message: Message):
-    """Обработка кнопки Найти игру"""
+    """Обработка кнопки Найти игру - показываем выбор формата"""
+    from keyboards import get_game_format_keyboard
+    
     user = await db.get_user(message.from_user.id)
     if not user:
         await message.answer(f"{EMOJI['warning']} Сначала зарегистрируйтесь командой /start")
@@ -57,31 +59,57 @@ async def find_game_button(message: Message):
         return
     
     if await db.is_in_queue(message.from_user.id):
-        queue_count = await db.get_queue_count(user['platform'])
-        await message.answer(format_queue_status(queue_count, user['platform']),
-            reply_markup=get_queue_keyboard(), parse_mode="Markdown")
+        game_format = await db.get_user_queue_format(message.from_user.id) or "5x5"
+        queue_count = await db.get_queue_count(user['platform'], game_format)
+        await message.answer(format_queue_status(queue_count, user['platform'], game_format),
+            reply_markup=get_queue_keyboard(game_format), parse_mode="Markdown")
         return
     
-    party_id = await db.get_user_party(message.from_user.id)
-    if party_id:
-        party_members = await db.get_party_members(party_id)
-        for member in party_members:
-            member_user = await db.get_user(member['user_id'])
-            if member_user and not member_user.get('is_banned'):
-                if not await db.is_user_in_active_or_pending_match(member['user_id']):
-                    await db.join_queue(member['user_id'], user['platform'], member_user['rating'], party_id)
-    else:
-        await db.join_queue(message.from_user.id, user['platform'], user['rating'], None)
-    
-    queue_count = await db.get_queue_count(user['platform'])
+    # Показываем выбор формата игры
     await message.answer(
-        f"{EMOJI['check']} *Вы добавлены в очередь поиска!*\n\n" + format_queue_status(queue_count, user['platform']),
-        reply_markup=get_queue_keyboard(), parse_mode="Markdown")
-    await try_create_match_from_queue(message.bot, user['platform'])
+        f"{EMOJI['game']} *Выберите формат игры:*",
+        reply_markup=get_game_format_keyboard("queue"),
+        parse_mode="Markdown")
 
 
-@router.callback_query(F.data == "queue:join")
-async def join_queue_callback(callback: CallbackQuery):
+@router.callback_query(F.data == "queue:select_format")
+async def select_queue_format(callback: CallbackQuery):
+    """Показать выбор формата для поиска игры"""
+    from keyboards import get_game_format_keyboard
+    
+    user = await db.get_user(callback.from_user.id)
+    if not user:
+        await callback.answer("Сначала зарегистрируйтесь!", show_alert=True)
+        return
+    
+    if user.get('is_banned'):
+        await callback.answer("Вы заблокированы!", show_alert=True)
+        return
+    
+    if await db.is_user_in_active_or_pending_match(callback.from_user.id):
+        await callback.answer("У вас есть активный матч!", show_alert=True)
+        return
+    
+    if await db.is_in_queue(callback.from_user.id):
+        await callback.answer("Вы уже в очереди!", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        f"{EMOJI['game']} *Выберите формат игры:*",
+        reply_markup=get_game_format_keyboard("queue"),
+        parse_mode="Markdown")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("queue:format:"))
+async def join_queue_with_format(callback: CallbackQuery):
+    """Присоединиться к очереди с выбранным форматом"""
+    game_format = callback.data.split(":")[2]
+    
+    if game_format not in GAME_FORMATS:
+        await callback.answer("Неизвестный формат!", show_alert=True)
+        return
+    
     user = await db.get_user(callback.from_user.id)
     if not user:
         await callback.answer("Сначала зарегистрируйтесь!", show_alert=True)
@@ -96,23 +124,38 @@ async def join_queue_callback(callback: CallbackQuery):
         await callback.answer("Вы уже в очереди!", show_alert=True)
         return
     
+    format_data = GAME_FORMATS[game_format]
+    
     party_id = await db.get_user_party(callback.from_user.id)
     if party_id:
         party_members = await db.get_party_members(party_id)
+        # Проверяем размер пати для формата
+        if len(party_members) > format_data['team_size']:
+            await callback.answer(
+                f"Ваша пати слишком большая для формата {format_data['name']}! Максимум {format_data['team_size']} человек.",
+                show_alert=True)
+            return
         for member in party_members:
             member_user = await db.get_user(member['user_id'])
             if member_user and not member_user.get('is_banned'):
                 if not await db.is_user_in_active_or_pending_match(member['user_id']):
-                    await db.join_queue(member['user_id'], user['platform'], member_user['rating'], party_id)
+                    await db.join_queue(member['user_id'], user['platform'], member_user['rating'], party_id, game_format)
     else:
-        await db.join_queue(callback.from_user.id, user['platform'], user['rating'], None)
+        await db.join_queue(callback.from_user.id, user['platform'], user['rating'], None, game_format)
     
-    queue_count = await db.get_queue_count(user['platform'])
+    queue_count = await db.get_queue_count(user['platform'], game_format)
     await callback.message.edit_text(
-        f"{EMOJI['check']} *Вы добавлены в очередь поиска!*\n\n" + format_queue_status(queue_count, user['platform']),
-        reply_markup=get_queue_keyboard(), parse_mode="Markdown")
+        f"{EMOJI['check']} *Вы добавлены в очередь поиска!*\n\n" + format_queue_status(queue_count, user['platform'], game_format),
+        reply_markup=get_queue_keyboard(game_format), parse_mode="Markdown")
     await callback.answer("Поиск начат!")
-    await try_create_match_from_queue(callback.bot, user['platform'])
+    await try_create_match_from_queue(callback.bot, user['platform'], game_format)
+
+
+@router.callback_query(F.data == "queue:join")
+async def join_queue_callback(callback: CallbackQuery):
+    """Присоединиться к очереди (для обратной совместимости - 5x5)"""
+    callback.data = "queue:format:5x5"
+    await join_queue_with_format(callback)
 
 
 @router.callback_query(F.data == "queue:leave")
@@ -128,34 +171,50 @@ async def leave_queue_callback(callback: CallbackQuery):
     await callback.answer("Поиск отменён")
 
 
-async def try_create_match_from_queue(bot: Bot, platform: str):
+@router.callback_query(F.data == "play:back")
+async def play_back_callback(callback: CallbackQuery):
+    """Вернуться в меню игры"""
+    await callback.message.edit_text(
+        f"{EMOJI['game']} *ИГРАТЬ*\n━━━━━━━━━━━━━━━━━━━━\n\nВыберите действие:",
+        reply_markup=get_play_menu_keyboard(), parse_mode="Markdown")
+    await callback.answer()
+
+
+async def try_create_match_from_queue(bot: Bot, platform: str, game_format: str = "5x5"):
     async with _match_creation_lock:
-        queue_players = await db.get_queue_players(platform)
-        if len(queue_players) < LOBBY_SIZE:
+        format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+        match_size = format_data['match_size']
+        
+        queue_players = await db.get_queue_players(platform, game_format)
+        if len(queue_players) < match_size:
             return
         
         valid_players = [p for p in queue_players if not await db.is_user_in_active_or_pending_match(p['user_id'])]
-        if len(valid_players) < LOBBY_SIZE:
+        if len(valid_players) < match_size:
             return
         
-        match_group = find_best_match_group(valid_players, MAX_RATING_DIFF)
-        if not match_group and len(valid_players) >= LOBBY_SIZE:
-            match_group = valid_players[:LOBBY_SIZE]
+        match_group = find_best_match_group(valid_players, MAX_RATING_DIFF, game_format)
+        if not match_group and len(valid_players) >= match_size:
+            match_group = valid_players[:match_size]
         if not match_group:
             return
         
-        await create_match_with_ready_check(bot, match_group, platform)
+        await create_match_with_ready_check(bot, match_group, platform, game_format)
 
 
-async def create_match_with_ready_check(bot: Bot, players: list, platform: str):
+async def create_match_with_ready_check(bot: Bot, players: list, platform: str, game_format: str = "5x5"):
+    format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+    match_size = format_data['match_size']
+    team_size = format_data['team_size']
+    
     for player in players:
         if await db.is_user_in_active_or_pending_match(player['user_id']):
             logger.warning(f"Player {player['user_id']} already in match")
             return
     
-    team1, team2 = balance_teams(players)
-    if len(team1) != 5 or len(team2) != 5:
-        logger.error("Team balancing failed")
+    team1, team2 = balance_teams(players, game_format)
+    if len(team1) != team_size or len(team2) != team_size:
+        logger.error(f"Team balancing failed for {game_format}: team1={len(team1)}, team2={len(team2)}")
         return
     
     team1_side, team2_side = assign_sides()
@@ -163,11 +222,12 @@ async def create_match_with_ready_check(bot: Bot, players: list, platform: str):
     team1_avg = calculate_team_rating(team1)
     team2_avg = calculate_team_rating(team2)
     
-    lobby_id = await db.create_lobby(0, platform, is_private=True)
+    lobby_id = await db.create_lobby(0, platform, is_private=True, game_format=game_format)
     match_id = await db.create_match_pending(
         lobby_id=lobby_id, platform=platform, map_name=map_name,
         team1_start_side=team1_side, team2_start_side=team2_side,
-        team1_avg_rating=team1_avg, team2_avg_rating=team2_avg)
+        team1_avg_rating=team1_avg, team2_avg_rating=team2_avg,
+        game_format=game_format)
     
     for player in team1:
         await db.add_match_player(match_id, player['user_id'], team=1, rating_before=player.get('rating', 1000))
@@ -179,8 +239,9 @@ async def create_match_with_ready_check(bot: Bot, players: list, platform: str):
     
     ready_text = (
         f"{EMOJI['fire']} *МАТЧ НАЙДЕН!*\n\n"
+        f"{format_data['emoji']} Формат: *{format_data['name']}*\n"
         f"{EMOJI['map']} Карта: *{map_name}*\n"
-        f"{EMOJI['users']} Игроков: *10*\n\n"
+        f"{EMOJI['users']} Игроков: *{match_size}*\n\n"
         f"{EMOJI['clock']} У вас есть *{READY_CHECK_TIMEOUT} секунд* чтобы подтвердить готовность!\n\n"
         f"Нажмите кнопку *«Готов»*, чтобы начать матч.")
     
@@ -195,16 +256,16 @@ async def create_match_with_ready_check(bot: Bot, players: list, platform: str):
         except Exception as e:
             logger.warning(f"Failed to notify {player['user_id']}: {e}")
     
-    if successful < LOBBY_SIZE:
-        await handle_ready_check_failed(bot, match_id, reason="notification_failed")
+    if successful < match_size:
+        await handle_ready_check_failed(bot, match_id, reason="notification_failed", game_format=game_format)
         return
     
-    task = asyncio.create_task(ready_check_timeout_handler(bot, match_id))
+    task = asyncio.create_task(ready_check_timeout_handler(bot, match_id, game_format))
     ready_check_timers[match_id] = task
-    logger.info(f"Match {match_id} created, {successful} players notified")
+    logger.info(f"Match {match_id} ({game_format}) created, {successful} players notified")
 
 
-async def ready_check_timeout_handler(bot: Bot, match_id: int):
+async def ready_check_timeout_handler(bot: Bot, match_id: int, game_format: str = "5x5"):
     try:
         await asyncio.sleep(READY_CHECK_TIMEOUT)
         match = await db.get_match(match_id)
@@ -300,7 +361,7 @@ async def ready_timeout_click(callback: CallbackQuery):
     await callback.answer("Время на подтверждение истекло.", show_alert=True)
 
 
-async def handle_ready_check_failed(bot: Bot, match_id: int, reason: str, declined_by: int = None):
+async def handle_ready_check_failed(bot: Bot, match_id: int, reason: str, declined_by: int = None, game_format: str = "5x5"):
     if match_id in ready_check_timers:
         ready_check_timers[match_id].cancel()
         ready_check_timers.pop(match_id, None)
@@ -345,15 +406,18 @@ async def handle_ready_check_failed(bot: Bot, match_id: int, reason: str, declin
         except Exception as e:
             logger.warning(f"Failed to notify {player['user_id']}: {e}")
     
+    # Получаем формат из матча для правильного возврата в очередь
+    match_game_format = match.get('game_format', '5x5')
+    
     for player in ready:
         if player['user_id'] != declined_by:
             user = await db.get_user(player['user_id'])
             if user and not user.get('is_banned'):
                 party_id = await db.get_user_party(player['user_id'])
-                await db.join_queue(player['user_id'], match['platform'], user['rating'], party_id)
+                await db.join_queue(player['user_id'], match['platform'], user['rating'], party_id, match_game_format)
     
     await db.cancel_match(match_id)
-    await try_create_match_from_queue(bot, match['platform'])
+    await try_create_match_from_queue(bot, match['platform'], match_game_format)
 
 
 async def start_match_after_ready_check(bot: Bot, match_id: int):
@@ -514,9 +578,10 @@ async def show_play_menu(message: Message):
         return
     
     if await db.is_in_queue(message.from_user.id):
-        queue_count = await db.get_queue_count(user['platform'])
-        await message.answer(format_queue_status(queue_count, user['platform']),
-            reply_markup=get_queue_keyboard(), parse_mode="Markdown")
+        game_format = await db.get_user_queue_format(message.from_user.id) or "5x5"
+        queue_count = await db.get_queue_count(user['platform'], game_format)
+        await message.answer(format_queue_status(queue_count, user['platform'], game_format),
+            reply_markup=get_queue_keyboard(game_format), parse_mode="Markdown")
         return
     
     active_lobby = await db.get_user_active_lobby(message.from_user.id)
@@ -527,8 +592,11 @@ async def show_play_menu(message: Message):
         players = await db.get_lobby_players(active_lobby)
         creator = await db.get_user(lobby['creator_id'])
         creator_name = format_player_name(creator) if creator else "Неизвестно"
+        game_format = lobby.get('game_format', '5x5')
+        format_data = GAME_FORMATS.get(game_format, GAME_FORMATS['5x5'])
+        lobby_size = format_data['lobby_size']
         is_creator = lobby['creator_id'] == message.from_user.id
-        is_full = len(players) >= 10
+        is_full = len(players) >= lobby_size
         await message.answer(
             f"{EMOJI['info']} *Вы уже в лобби!*\n\n" + format_lobby_info(lobby, players, creator_name),
             reply_markup=get_lobby_keyboard(active_lobby, is_creator, is_full), parse_mode="Markdown")
