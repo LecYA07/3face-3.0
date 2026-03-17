@@ -10,12 +10,13 @@ from config import (
 def escape_markdown(text: str) -> str:
     """
     Экранировать спецсимволы Markdown для безопасного отображения.
-    Для Markdown (не MarkdownV2) экранируем: _ * [ ] ( ) ~
+    Для Markdown (не MarkdownV2) экранируем: _ * `
+    НЕ экранируем [ ] - они нужны для создания ссылок
     """
     if not text:
         return text
-    # Экранируем основные спецсимволы Markdown
-    escape_chars = ['_', '*', '[', ']', '`']
+    # Экранируем основные спецсимволы Markdown (без скобок - они нужны для ссылок)
+    escape_chars = ['_', '*', '`']
     for char in escape_chars:
         text = text.replace(char, '\\' + char)
     return text
@@ -228,7 +229,13 @@ def format_player_stats(player: Dict[str, Any]) -> str:
     
     kills = player.get('kills', 0)
     deaths = player.get('deaths', 0)
-    kd = kills / deaths if deaths > 0 else kills
+    assists = player.get('assists', 0)
+    kd = kills / deaths if deaths > 0 else float(kills)
+    
+    # Средние показатели за матч
+    avg_kills = kills / total_games if total_games > 0 else 0
+    avg_deaths = deaths / total_games if total_games > 0 else 0
+    avg_assists = assists / total_games if total_games > 0 else 0
     
     return (
         f"\n{EMOJI['chart']} *Статистика:*\n"
@@ -236,7 +243,9 @@ def format_player_stats(player: Dict[str, Any]) -> str:
         f"├ {EMOJI['sword']} Победы: *{wins}*\n"
         f"├ {EMOJI['shield']} Поражения: *{losses}*\n"
         f"├ {EMOJI['target']} Винрейт: *{winrate:.1f}%*\n"
+        f"├ 🎯 K/D/A: *{kills}/{deaths}/{assists}*\n"
         f"├ {EMOJI['fire']} K/D: *{kd:.2f}*\n"
+        f"├ 📊 Avg K/D/A: *{avg_kills:.1f}/{avg_deaths:.1f}/{avg_assists:.1f}*\n"
         f"├ {EMOJI['medal']} MVP: *{player.get('mvp_count', 0)}*\n"
         f"└ {EMOJI['game']} Всего игр: *{total_games}*\n"
     )

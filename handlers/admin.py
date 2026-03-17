@@ -1245,6 +1245,8 @@ async def show_ai_verification_details(callback: CallbackQuery, verification: di
 @router.callback_query(F.data.startswith("ai:approve:"))
 async def approve_ai_verification(callback: CallbackQuery):
     """Подтвердить результат AI проверки"""
+    import json
+    
     if not await is_moderator(callback.from_user.id):
         await callback.answer("Нет доступа!", show_alert=True)
         return
@@ -1267,14 +1269,23 @@ async def approve_ai_verification(callback: CallbackQuery):
         await callback.answer("AI не смог определить результат. Используйте редактирование.", show_alert=True)
         return
     
-    # Применяем результаты
+    # Извлекаем статистику игроков из AI результата
+    players_stats = None
+    try:
+        ai_result = json.loads(verification.get('ai_result', '{}'))
+        players_stats = ai_result.get('players_stats', [])
+    except:
+        players_stats = None
+    
+    # Применяем результаты с KDA из AI
     await apply_match_result(
         match_id=match_id,
         team1_score=verification['team1_score'],
         team2_score=verification['team2_score'],
         winner_team=verification['winner_team'],
         mvp_user_id=verification['mvp_user_id'],
-        verified_by=callback.from_user.id
+        verified_by=callback.from_user.id,
+        players_stats=players_stats
     )
     
     # Обновляем статус AI проверки
@@ -1575,8 +1586,20 @@ async def manual_check_anyway(callback: CallbackQuery, state: FSMContext):
 
 
 async def apply_match_result(match_id: int, team1_score: int, team2_score: int, 
-                             winner_team: int, mvp_user_id: int, verified_by: int):
-    """Применить результаты матча (общая функция для AI и ручной проверки)"""
+                             winner_team: int, mvp_user_id: int, verified_by: int,
+                             players_stats: list = None):
+    """
+    Применить результаты матча (общая функция для AI и ручной проверки)
+    
+    Args:
+        match_id: ID матча
+        team1_score: Счёт команды 1
+        team2_score: Счёт команды 2
+        winner_team: Номер победившей команды (1 или 2)
+        mvp_user_id: ID MVP игрока (0 если нет)
+        verified_by: ID модератора, подтвердившего результат
+        players_stats: Статистика игроков из AI анализа (список словарей с user_id, kills, deaths, assists)
+    """
     # Получаем информацию о матче
     match = await db.get_match(match_id)
     team1_avg = match.get('team1_avg_rating', 1000)
@@ -1593,6 +1616,18 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
     # Обновляем результат матча
     await db.update_match_result(match_id, team1_score, team2_score, winner_team)
     
+    # Создаём словарь статистики по user_id для быстрого поиска
+    stats_by_user = {}
+    if players_stats:
+        for ps in players_stats:
+            user_id = ps.get('user_id')
+            if user_id:
+                stats_by_user[user_id] = {
+                    'kills': ps.get('kills', 0) or 0,
+                    'deaths': ps.get('deaths', 0) or 0,
+                    'assists': ps.get('assists', 0) or 0
+                }
+    
     # Обновляем статистику игроков
     team1_players = await db.get_match_players(match_id, team=1)
     team2_players = await db.get_match_players(match_id, team=2)
@@ -1603,12 +1638,18 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
         is_mvp = player['user_id'] == mvp_user_id
         rating_change = calculate_rating_change(winner_rating, loser_rating, is_winner, is_mvp)
         
+        # Получаем KDA из статистики AI или используем 0
+        player_stats = stats_by_user.get(player['user_id'], {'kills': 0, 'deaths': 0, 'assists': 0})
+        kills = player_stats['kills']
+        deaths = player_stats['deaths']
+        assists = player_stats['assists']
+        
         await db.update_match_player_stats(
             match_id=match_id,
             user_id=player['user_id'],
-            kills=0,
-            deaths=0,
-            assists=0,
+            kills=kills,
+            deaths=deaths,
+            assists=assists,
             is_mvp=is_mvp,
             rating_change=rating_change
         )
@@ -1617,6 +1658,9 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
             user_id=player['user_id'],
             wins=1 if is_winner else 0,
             losses=0 if is_winner else 1,
+            kills=kills,
+            deaths=deaths,
+            assists=assists,
             rating_change=rating_change,
             is_mvp=is_mvp
         )
@@ -1627,12 +1671,18 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
         is_mvp = player['user_id'] == mvp_user_id
         rating_change = calculate_rating_change(winner_rating, loser_rating, is_winner, is_mvp)
         
+        # Получаем KDA из статистики AI или используем 0
+        player_stats = stats_by_user.get(player['user_id'], {'kills': 0, 'deaths': 0, 'assists': 0})
+        kills = player_stats['kills']
+        deaths = player_stats['deaths']
+        assists = player_stats['assists']
+        
         await db.update_match_player_stats(
             match_id=match_id,
             user_id=player['user_id'],
-            kills=0,
-            deaths=0,
-            assists=0,
+            kills=kills,
+            deaths=deaths,
+            assists=assists,
             is_mvp=is_mvp,
             rating_change=rating_change
         )
@@ -1641,6 +1691,9 @@ async def apply_match_result(match_id: int, team1_score: int, team2_score: int,
             user_id=player['user_id'],
             wins=1 if is_winner else 0,
             losses=0 if is_winner else 1,
+            kills=kills,
+            deaths=deaths,
+            assists=assists,
             rating_change=rating_change,
             is_mvp=is_mvp
         )

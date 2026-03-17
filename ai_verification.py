@@ -260,6 +260,26 @@ def format_ai_result_for_admin(ai_result: Dict[str, Any], match_info: Dict,
     """
     Форматирование результата AI анализа для отправки администратору
     """
+    from utils import escape_markdown
+    
+    # Создаём словарь для быстрого поиска игроков по user_id
+    all_players = team1_players + team2_players
+    players_by_id = {p['user_id']: p for p in all_players}
+    
+    def format_player_link(player: Dict) -> str:
+        """Форматировать ссылку на игрока"""
+        username = player.get('username')
+        game_nickname = player.get('game_nickname')
+        full_name = player.get('full_name', 'Игрок')
+        user_id = player.get('user_id')
+        
+        display_name = escape_markdown(game_nickname or full_name)
+        
+        if username:
+            return f"[{display_name}](https://t.me/{username})"
+        elif user_id:
+            return f"[{display_name}](tg://user?id={user_id})"
+        return display_name
     
     # Проверяем, является ли скриншот невалидным
     if ai_result.get('is_valid_screenshot') == False:
@@ -302,22 +322,37 @@ def format_ai_result_for_admin(ai_result: Dict[str, Any], match_info: Dict,
     winner_team = ai_result.get('winner_team')
     winner_text = f"Команда {winner_team}" if winner_team else "Не определён"
     
-    # Формируем статистику игроков
+    # Формируем статистику игроков с ссылками на профили
     players_stats_text = ""
     if ai_result.get('players_stats'):
         players_stats_text = "\n\n📊 *Статистика игроков:*\n"
         for ps in ai_result['players_stats']:
             mvp_mark = " ⭐" if ps.get('is_mvp') else ""
-            players_stats_text += f"  • {ps.get('nickname_on_screenshot', 'Unknown')}: {ps.get('kills', 0)}/{ps.get('deaths', 0)}/{ps.get('assists', 0)}{mvp_mark}\n"
+            nickname_on_screenshot = ps.get('nickname_on_screenshot', 'Unknown')
+            kills = ps.get('kills', 0)
+            deaths = ps.get('deaths', 0)
+            assists = ps.get('assists', 0)
+            
+            # Пытаемся найти игрока по user_id и сделать ссылку
+            user_id = ps.get('user_id')
+            if user_id and user_id in players_by_id:
+                player = players_by_id[user_id]
+                player_link = format_player_link(player)
+                players_stats_text += f"  • {player_link}: {kills}/{deaths}/{assists}{mvp_mark}\n"
+            else:
+                # Если не нашли игрока, показываем просто ник со скриншота
+                safe_nickname = escape_markdown(nickname_on_screenshot)
+                players_stats_text += f"  • {safe_nickname}: {kills}/{deaths}/{assists}{mvp_mark}\n"
     
     mvp_text = "Не определён"
     if ai_result.get('mvp_user_id'):
-        # Ищем игрока по ID
-        all_players = team1_players + team2_players
-        for p in all_players:
-            if p['user_id'] == ai_result['mvp_user_id']:
-                mvp_text = p.get('game_nickname') or p.get('username') or f"ID: {p['user_id']}"
-                break
+        # Ищем игрока по ID и делаем ссылку
+        mvp_user_id = ai_result['mvp_user_id']
+        if mvp_user_id in players_by_id:
+            mvp_player = players_by_id[mvp_user_id]
+            mvp_text = format_player_link(mvp_player)
+        else:
+            mvp_text = f"ID: {mvp_user_id}"
     
     return (
         f"🤖 *РЕЗУЛЬТАТ AI АНАЛИЗА*\n"
@@ -326,7 +361,7 @@ def format_ai_result_for_admin(ai_result: Dict[str, Any], match_info: Dict,
         f"🗺️ Карта: *{match_info.get('map_name', 'Неизвестно')}*\n"
         f"🏆 Счёт: *{team1_score} : {team2_score}*\n"
         f"👑 Победитель: *{winner_text}*\n"
-        f"⭐ MVP: *{mvp_text}*"
+        f"⭐ MVP: {mvp_text}"
         f"{players_stats_text}\n\n"
         f"⚠️ *Проверьте результаты и подтвердите или отредактируйте*"
     )
