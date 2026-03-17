@@ -849,6 +849,38 @@ def get_ai_invalid_screenshot_keyboard(verification_id: int, match_id: int, subm
     return builder.as_markup()
 
 
+def get_ai_auto_applied_keyboard(verification_id: int, match_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для автоматически применённых результатов AI (возможность отмены/редактирования)"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['check']} Всё верно",
+            callback_data=f"ai:confirm_auto:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['gear']} Изменить результат",
+            callback_data=f"ai:edit_applied:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отменить результаты",
+            callback_data=f"ai:revert:{verification_id}:{match_id}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['info']} Детали матча",
+            callback_data=f"ai:details:{match_id}"
+        )
+    )
+    
+    return builder.as_markup()
+
+
 # ============ PLAYER SEARCH & STATS EDITING KEYBOARDS ============
 
 def get_player_info_keyboard(user_id: int, is_admin: bool = False) -> InlineKeyboardMarkup:

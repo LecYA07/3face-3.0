@@ -2021,6 +2021,125 @@ async def manual_check_anyway(callback: CallbackQuery, state: FSMContext):
     await callback.answer("Переход к ручной проверке")
 
 
+# ============ AUTO-APPLIED RESULTS HANDLERS ============
+
+@router.callback_query(F.data.startswith("ai:confirm_auto:"))
+async def confirm_auto_applied(callback: CallbackQuery):
+    """Подтвердить автоматически применённые результаты (просто убрать клавиатуру)"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    # Обновляем статус AI проверки
+    await db.update_ai_verification_status(
+        verification_id=verification_id,
+        status='confirmed',
+        admin_id=callback.from_user.id,
+        admin_action='confirm_auto'
+    )
+    
+    await callback.message.edit_caption(
+        caption=(
+            f"{EMOJI['check']} *Результаты подтверждены*\n\n"
+            f"Матч: #{match_id}\n"
+            f"Автоматические результаты оставлены без изменений.\n\n"
+            f"✅ Подтвердил: @{callback.from_user.username or callback.from_user.id}"
+        ),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Результаты подтверждены!")
+
+
+@router.callback_query(F.data.startswith("ai:edit_applied:"))
+async def edit_auto_applied(callback: CallbackQuery, state: FSMContext):
+    """Редактировать автоматически применённые результаты"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    from keyboards import get_ai_edit_winner_keyboard
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    # Сначала отменяем текущие результаты
+    reverted = await db.revert_match_result(match_id)
+    
+    if not reverted:
+        await callback.answer("Не удалось отменить результаты. Возможно матч уже изменён.", show_alert=True)
+        return
+    
+    # Сохраняем данные для редактирования
+    verification = await db.get_ai_verification(verification_id)
+    if verification:
+        await state.update_data(
+            verification_id=verification_id,
+            submission_id=verification['submission_id'],
+            match_id=match_id,
+            reviewer_id=callback.from_user.id
+        )
+    
+    await callback.message.answer(
+        f"{EMOJI['gear']} *Редактирование результата*\n\n"
+        f"Матч: #{match_id}\n"
+        f"⚠️ Автоматические результаты отменены.\n\n"
+        f"Выберите команду-победителя:",
+        reply_markup=get_ai_edit_winner_keyboard(verification_id, match_id),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Результаты отменены, введите новые")
+
+
+@router.callback_query(F.data.startswith("ai:revert:"))
+async def revert_auto_applied(callback: CallbackQuery):
+    """Отменить автоматически применённые результаты"""
+    if not await is_moderator(callback.from_user.id):
+        await callback.answer("Нет доступа!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    verification_id = int(parts[2])
+    match_id = int(parts[3])
+    
+    # Отменяем результаты матча
+    reverted = await db.revert_match_result(match_id)
+    
+    if not reverted:
+        await callback.answer("Не удалось отменить результаты. Возможно матч уже изменён.", show_alert=True)
+        return
+    
+    # Обновляем статус AI проверки
+    await db.update_ai_verification_status(
+        verification_id=verification_id,
+        status='reverted',
+        admin_id=callback.from_user.id,
+        admin_action='revert'
+    )
+    
+    # Обновляем статус заявки обратно на pending
+    verification = await db.get_ai_verification(verification_id)
+    if verification:
+        await db.update_submission_status(verification['submission_id'], 'pending', callback.from_user.id)
+    
+    await callback.message.edit_caption(
+        caption=(
+            f"{EMOJI['cross']} *Результаты отменены*\n\n"
+            f"Матч: #{match_id}\n"
+            f"Статистика игроков возвращена к состоянию до матча.\n"
+            f"Матч вернулся в статус 'active'.\n\n"
+            f"⚠️ Игроки могут отправить новый скриншот для проверки.\n\n"
+            f"❌ Отменил: @{callback.from_user.username or callback.from_user.id}"
+        ),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Результаты отменены!")
+
+
 async def apply_match_result(match_id: int, team1_score: int, team2_score: int, 
                              winner_team: int, mvp_user_id: int, verified_by: int,
                              players_stats: list = None):

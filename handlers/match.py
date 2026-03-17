@@ -569,8 +569,9 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
     """Обработка AI проверки скриншота"""
     import json
     from ai_verification import analyze_match_screenshot, download_and_encode_photo, format_ai_result_for_admin, is_valid_match_screenshot
-    from keyboards import get_ai_verification_keyboard, get_ai_invalid_screenshot_keyboard
-    from config import AI_REPORT_ADMIN_ID
+    from keyboards import get_ai_verification_keyboard, get_ai_invalid_screenshot_keyboard, get_ai_auto_applied_keyboard
+    from config import AI_REPORT_ADMIN_ID, AI_AUTO_APPROVE_CONFIDENCE
+    from handlers.admin import apply_match_result
     
     try:
         # Получаем данные матча
@@ -614,23 +615,85 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
         # Формируем сообщение для админов
         admin_text = format_ai_result_for_admin(ai_result, match, team1_players, team2_players)
         
-        # Выбираем клавиатуру в зависимости от валидности скриншота
+        # Проверяем условия для автоматического применения результатов
+        confidence = ai_result.get('confidence', 0)
+        is_valid = ai_result.get('is_valid_screenshot', True)
+        has_winner = ai_result.get('winner_team') is not None
+        has_scores = ai_result.get('team1_score') is not None and ai_result.get('team2_score') is not None
+        
+        auto_applied = False
+        
+        # Автоматически применяем результаты если:
+        # 1. Скриншот валидный
+        # 2. Уверенность >= порога автоподтверждения
+        # 3. Есть победитель и счёт
+        if is_valid and confidence >= AI_AUTO_APPROVE_CONFIDENCE and has_winner and has_scores:
+            try:
+                # Извлекаем статистику игроков
+                players_stats = ai_result.get('players_stats', [])
+                
+                # Применяем результаты автоматически
+                await apply_match_result(
+                    match_id=match_id,
+                    team1_score=ai_result.get('team1_score'),
+                    team2_score=ai_result.get('team2_score'),
+                    winner_team=ai_result.get('winner_team'),
+                    mvp_user_id=ai_result.get('mvp_user_id') or 0,
+                    verified_by=0,  # 0 = автоматическая проверка
+                    players_stats=players_stats
+                )
+                
+                # Обновляем статус AI проверки
+                await db.update_ai_verification_status(
+                    verification_id=verification_id,
+                    status='auto_approved',
+                    admin_id=0,  # 0 = автоматическая проверка
+                    admin_action='auto_approve'
+                )
+                
+                # Обновляем статус заявки
+                await db.update_submission_status(submission_id, 'approved', 0)
+                
+                auto_applied = True
+                logger.info(f"Auto-applied results for match {match_id}, confidence={confidence}")
+                
+            except Exception as e:
+                logger.error(f"Failed to auto-apply results for match {match_id}: {e}")
+                auto_applied = False
+        
+        # Выбираем клавиатуру в зависимости от результата
         if ai_result.get('is_valid_screenshot') == False:
             # Невалидный скриншот - специальная клавиатура
             keyboard = get_ai_invalid_screenshot_keyboard(verification_id, match_id, submission_id)
+        elif auto_applied:
+            # Результаты автоматически применены - клавиатура для изменения/отмены
+            keyboard = get_ai_auto_applied_keyboard(verification_id, match_id)
         else:
-            # Валидный скриншот - обычная клавиатура
+            # Валидный скриншот, но не автоприменён - обычная клавиатура для подтверждения
             keyboard = get_ai_verification_keyboard(verification_id, match_id)
         
+        # Формируем текст уведомления
+        if auto_applied:
+            status_text = (
+                f"🤖 *РЕЗУЛЬТАТЫ АВТОМАТИЧЕСКИ ПРИМЕНЕНЫ*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"✅ Уверенность AI: *{int(confidence * 100)}%* (порог: {int(AI_AUTO_APPROVE_CONFIDENCE * 100)}%)\n\n"
+                f"{admin_text}\n\n"
+                f"⚠️ *Если результаты неверны - вы можете их изменить или отменить*"
+            )
+        else:
+            status_text = (
+                f"📷 *Новая заявка #{submission_id}*\n"
+                f"Матч: #{match_id}\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"{admin_text}"
+            )
+        
         # Определяем кому отправлять уведомления
-        # Если указан AI_REPORT_ADMIN_ID - отправляем только ему
-        # Иначе - всем админам и модераторам
         if AI_REPORT_ADMIN_ID:
             admins = [{'user_id': AI_REPORT_ADMIN_ID}]
         else:
             admins = await db.get_all_admins_and_moderators()
-        
-        submission = await db.get_submission(submission_id)
         
         for admin in admins:
             try:
@@ -638,12 +701,7 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
                 await bot.send_photo(
                     chat_id=admin['user_id'],
                     photo=photo_file_id,
-                    caption=(
-                        f"📷 *Новая заявка #{submission_id}*\n"
-                        f"Матч: #{match_id}\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-                        f"{admin_text}"
-                    ),
+                    caption=status_text,
                     reply_markup=keyboard,
                     parse_mode="Markdown"
                 )
@@ -651,9 +709,8 @@ async def process_ai_verification(bot, submission_id: int, match_id: int, photo_
                 logger.warning(f"Failed to notify admin {admin['user_id']}: {e}")
         
         # Логируем результат
-        is_valid = ai_result.get('is_valid_screenshot', True)
         screenshot_type = ai_result.get('screenshot_type', 'unknown')
-        logger.info(f"AI verification completed for submission {submission_id}: valid={is_valid}, type={screenshot_type}, confidence={ai_result.get('confidence', 0)}")
+        logger.info(f"AI verification completed for submission {submission_id}: valid={is_valid}, type={screenshot_type}, confidence={confidence}, auto_applied={auto_applied}")
         
     except Exception as e:
         logger.error(f"AI verification error for submission {submission_id}: {e}")

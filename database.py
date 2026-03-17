@@ -1813,6 +1813,108 @@ async def update_ai_verification_result(
         await db.commit()
 
 
+async def revert_match_result(match_id: int) -> bool:
+    """
+    Отменить результаты матча и вернуть статистику игроков.
+    Возвращает True если успешно, False если матч не найден или не был завершён.
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Проверяем что матч существует и завершён
+        async with db.execute(
+            "SELECT * FROM matches WHERE match_id = ? AND status = 'finished'",
+            (match_id,)
+        ) as cursor:
+            match = await cursor.fetchone()
+            if not match:
+                return False
+        
+        # Получаем игроков матча с их изменениями статистики
+        async with db.execute(
+            "SELECT * FROM match_players WHERE match_id = ?",
+            (match_id,)
+        ) as cursor:
+            players = await cursor.fetchall()
+        
+        winner_team = match['winner_team']
+        
+        # Откатываем статистику каждого игрока
+        for player in players:
+            user_id = player['user_id']
+            team = player['team']
+            kills = player['kills'] or 0
+            deaths = player['deaths'] or 0
+            assists = player['assists'] or 0
+            is_mvp = player['is_mvp']
+            rating_change = player['rating_change'] or 0
+            
+            is_winner = team == winner_team
+            
+            # Откатываем статистику (вычитаем то что было добавлено)
+            await db.execute("""
+                UPDATE users SET 
+                    wins = wins - ?,
+                    losses = losses - ?,
+                    kills = MAX(0, kills - ?),
+                    deaths = MAX(0, deaths - ?),
+                    assists = MAX(0, assists - ?),
+                    rating = MAX(?, rating - ?),
+                    mvp_count = MAX(0, mvp_count - ?)
+                WHERE user_id = ?
+            """, (
+                1 if is_winner else 0,
+                0 if is_winner else 1,
+                kills,
+                deaths,
+                assists,
+                MIN_RATING,
+                rating_change,
+                1 if is_mvp else 0,
+                user_id
+            ))
+        
+        # Возвращаем матч в статус active
+        await db.execute("""
+            UPDATE matches SET 
+                status = 'active',
+                team1_score = 0,
+                team2_score = 0,
+                winner_team = NULL,
+                finished_at = NULL
+            WHERE match_id = ?
+        """, (match_id,))
+        
+        # Сбрасываем статистику игроков в матче
+        await db.execute("""
+            UPDATE match_players SET 
+                kills = 0,
+                deaths = 0,
+                assists = 0,
+                is_mvp = 0,
+                rating_change = 0
+            WHERE match_id = ?
+        """, (match_id,))
+        
+        await db.commit()
+        return True
+
+
+async def get_match_players_stats(match_id: int) -> List[Dict[str, Any]]:
+    """Получить статистику игроков в матче для отката"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT mp.*, u.username, u.full_name, u.game_nickname, u.rating
+            FROM match_players mp
+            JOIN users u ON mp.user_id = u.user_id
+            WHERE mp.match_id = ?
+        """
+        async with db.execute(query, (match_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
 async def get_all_admins_and_moderators() -> List[Dict[str, Any]]:
     """Получить всех администраторов и модераторов"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
