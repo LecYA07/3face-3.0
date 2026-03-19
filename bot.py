@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
@@ -14,7 +15,9 @@ from config import (
 )
 from database import (
     init_db, create_user, get_user, join_lobby, get_lobby, 
-    join_party, get_party, get_party_members, update_user_game_info, is_user_registered
+    join_party, get_party, get_party_members, update_user_game_info, is_user_registered,
+    is_registration_closed, ban_user, log_blocked_registration_attempt, 
+    get_all_admins_and_moderators
 )
 from keyboards import get_main_menu_keyboard, get_party_invite_keyboard
 from utils import format_welcome_message, format_player_name, format_lobby_info, format_party_info
@@ -182,8 +185,72 @@ async def main():
             parse_mode="Markdown"
         )
     
+    async def notify_admins_blocked_registration(user_id: int, username: str, full_name: str):
+        """Уведомить админов о попытке регистрации при закрытой регистрации"""
+        try:
+            admins = await get_all_admins_and_moderators()
+            
+            user_info = f"ID: `{user_id}`"
+            if username:
+                user_info += f"\nUsername: @{username}"
+            if full_name:
+                user_info += f"\nИмя: {full_name}"
+            
+            notification_text = (
+                f"🚫 *ПОПЫТКА РЕГИСТРАЦИИ ПРИ ЗАКРЫТОЙ РЕГИСТРАЦИИ*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"👤 *Пользователь:*\n{user_info}\n\n"
+                f"⚠️ Пользователь автоматически *ЗАБАНЕН*!\n\n"
+                f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}"
+            )
+            
+            for admin in admins:
+                try:
+                    await bot.send_message(
+                        chat_id=admin['user_id'],
+                        text=notification_text,
+                        parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to notify admin {admin['user_id']}: {e}")
+        except Exception as e:
+            logger.error(f"Error notifying admins about blocked registration: {e}")
+    
     async def start_registration(message: Message, state: FSMContext):
         """Начать процесс регистрации"""
+        user_id = message.from_user.id
+        username = message.from_user.username
+        full_name = message.from_user.full_name
+        
+        # Проверяем, закрыта ли регистрация
+        if await is_registration_closed():
+            # Баним пользователя за попытку регистрации при закрытой регистрации
+            await ban_user(user_id)
+            
+            # Логируем попытку
+            await log_blocked_registration_attempt(
+                user_id=user_id,
+                username=username,
+                full_name=full_name,
+                ban_applied=True
+            )
+            
+            # Уведомляем админов
+            await notify_admins_blocked_registration(user_id, username, full_name)
+            
+            # Сообщаем пользователю
+            await message.answer(
+                f"🚫 *РЕГИСТРАЦИЯ ЗАКРЫТА*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"В данный момент регистрация новых пользователей временно закрыта.\n\n"
+                f"⚠️ *Ваш аккаунт был автоматически заблокирован* за попытку регистрации в период закрытия.\n\n"
+                f"Если вы считаете, что это ошибка, обратитесь к администрации.",
+                parse_mode="Markdown"
+            )
+            
+            await state.clear()
+            return
+        
         await state.set_state(RegistrationStates.waiting_for_nickname)
         await message.answer(
             f"{EMOJI['user']} *РЕГИСТРАЦИЯ*\n"

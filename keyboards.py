@@ -348,6 +348,18 @@ def get_admin_menu_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(
+            text="🚫 Управление регистрацией",
+            callback_data="admin:registration"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="📅 Массовый бан по дате",
+            callback_data="admin:massban"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
             text=f"{EMOJI['crown']} Управление ролями",
             callback_data="admin:roles"
         )
@@ -1010,6 +1022,169 @@ def get_search_results_keyboard(users: list, query: str) -> InlineKeyboardMarkup
         InlineKeyboardButton(
             text="🔍 Новый поиск",
             callback_data="search:player"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ В админ-панель",
+            callback_data="search:back_admin"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+# ============ REGISTRATION CONTROL KEYBOARDS ============
+
+def get_registration_control_keyboard(is_closed: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура управления регистрацией"""
+    builder = InlineKeyboardBuilder()
+    
+    if is_closed:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['check']} Открыть регистрацию",
+                callback_data="regcontrol:open"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['info']} Статус блокировки",
+                callback_data="regcontrol:status"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="📋 Заблокированные попытки",
+                callback_data="regcontrol:attempts"
+            )
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['lock']} Закрыть на 1 час",
+                callback_data="regcontrol:close:1h"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['lock']} Закрыть на 6 часов",
+                callback_data="regcontrol:close:6h"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['lock']} Закрыть на 24 часа",
+                callback_data="regcontrol:close:24h"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['lock']} Закрыть на неделю",
+                callback_data="regcontrol:close:7d"
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"{EMOJI['gear']} Указать своё время",
+                callback_data="regcontrol:close:custom"
+            )
+        )
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="search:back_admin"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_mass_ban_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура массового бана по дате регистрации"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="📅 За последний час",
+            callback_data="massban:period:1h"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="📅 За последние 6 часов",
+            callback_data="massban:period:6h"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="📅 За последние 24 часа",
+            callback_data="massban:period:24h"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="📅 За последнюю неделю",
+            callback_data="massban:period:7d"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['gear']} Указать период",
+            callback_data="massban:custom"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="📊 Статистика регистраций",
+            callback_data="massban:stats"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="◀️ Назад",
+            callback_data="search:back_admin"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_mass_ban_confirm_keyboard(from_timestamp: str, to_timestamp: str, count: int) -> InlineKeyboardMarkup:
+    """Клавиатура подтверждения массового бана"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text=f"🚫 Забанить {count} пользователей",
+            callback_data=f"massban:confirm:{from_timestamp}:{to_timestamp}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text="📋 Посмотреть список",
+            callback_data=f"massban:list:{from_timestamp}:{to_timestamp}"
+        )
+    )
+    builder.row(
+        InlineKeyboardButton(
+            text=f"{EMOJI['cross']} Отмена",
+            callback_data="massban:cancel"
+        )
+    )
+    
+    return builder.as_markup()
+
+
+def get_mass_ban_result_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура после выполнения массового бана"""
+    builder = InlineKeyboardBuilder()
+    
+    builder.row(
+        InlineKeyboardButton(
+            text="🔄 Новый массовый бан",
+            callback_data="admin:massban"
         )
     )
     builder.row(

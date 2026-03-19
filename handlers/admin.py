@@ -30,6 +30,11 @@ class AdminStates(StatesGroup):
     # Состояния для инлайн редактирования
     waiting_search_query = State()
     waiting_new_stat_value = State()
+    # Состояния для управления регистрацией
+    waiting_custom_close_time = State()
+    # Состояния для массового бана
+    waiting_custom_period_from = State()
+    waiting_custom_period_to = State()
 
 
 async def is_admin(user_id: int) -> bool:
@@ -2837,9 +2842,448 @@ async def back_to_admin_panel(callback: CallbackQuery, state: FSMContext):
 
 # ============ BACKUP CALLBACK ============
 
+# ============ REGISTRATION CONTROL HANDLERS ============
+
+@router.callback_query(F.data == "admin:registration")
+async def show_registration_control(callback: CallbackQuery):
+    """Показать управление регистрацией"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_registration_control_keyboard
+    from datetime import timedelta
+    
+    is_closed = await db.is_registration_closed()
+    closed_until = await db.get_registration_closed_until()
+    reason = await db.get_registration_closed_reason()
+    
+    if is_closed and closed_until:
+        time_left = closed_until - datetime.now()
+        hours_left = int(time_left.total_seconds() // 3600)
+        minutes_left = int((time_left.total_seconds() % 3600) // 60)
+        
+        status_text = (
+            f"🚫 *Регистрация закрыта*\n\n"
+            f"⏰ До открытия: *{hours_left}ч {minutes_left}мин*\n"
+            f"📅 Откроется: *{closed_until.strftime('%d.%m.%Y %H:%M')}*\n"
+        )
+        if reason:
+            status_text += f"📝 Причина: {reason}\n"
+        status_text += (
+            f"\n⚠️ *Внимание:* Все попытки регистрации во время закрытия "
+            f"приводят к *автоматическому бану* пользователя!"
+        )
+    else:
+        status_text = (
+            f"✅ *Регистрация открыта*\n\n"
+            f"Новые пользователи могут регистрироваться."
+        )
+    
+    await callback.message.edit_text(
+        f"🚫 *УПРАВЛЕНИЕ РЕГИСТРАЦИЕЙ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{status_text}",
+        reply_markup=get_registration_control_keyboard(is_closed),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("regcontrol:close:"))
+async def close_registration(callback: CallbackQuery, state: FSMContext):
+    """Закрыть регистрацию"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_registration_control_keyboard, get_cancel_input_keyboard
+    from datetime import timedelta
+    
+    period = callback.data.split(":")[2]
+    
+    if period == "custom":
+        # Запрашиваем своё время
+        await state.set_state(AdminStates.waiting_custom_close_time)
+        await callback.message.edit_text(
+            f"{EMOJI['gear']} *Закрытие регистрации*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Введите время закрытия в формате:\n"
+            f"• `2h` - 2 часа\n"
+            f"• `30m` - 30 минут\n"
+            f"• `1d` - 1 день\n"
+            f"• `1w` - 1 неделя\n\n"
+            f"Или укажите дату и время:\n"
+            f"`25.03.2026 18:00`",
+            reply_markup=get_cancel_input_keyboard(0),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+    
+    # Парсим период
+    if period == "1h":
+        delta = timedelta(hours=1)
+        period_text = "1 час"
+    elif period == "6h":
+        delta = timedelta(hours=6)
+        period_text = "6 часов"
+    elif period == "24h":
+        delta = timedelta(hours=24)
+        period_text = "24 часа"
+    elif period == "7d":
+        delta = timedelta(days=7)
+        period_text = "1 неделю"
+    else:
+        await callback.answer("Неизвестный период!", show_alert=True)
+        return
+    
+    until = datetime.now() + delta
+    await db.close_registration(until, f"Закрыто администратором на {period_text}")
+    
+    await callback.message.edit_text(
+        f"🚫 *Регистрация закрыта!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏰ Период: *{period_text}*\n"
+        f"📅 Откроется: *{until.strftime('%d.%m.%Y %H:%M')}*\n\n"
+        f"⚠️ Все попытки регистрации будут приводить к автоматическому бану!",
+        reply_markup=get_registration_control_keyboard(is_closed=True),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Регистрация закрыта!")
+
+
+@router.message(AdminStates.waiting_custom_close_time)
+async def process_custom_close_time(message: Message, state: FSMContext):
+    """Обработать своё время закрытия"""
+    if not await is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    from keyboards import get_registration_control_keyboard
+    from datetime import timedelta
+    
+    text = message.text.strip().lower()
+    
+    until = None
+    period_text = ""
+    
+    # Парсим относительное время
+    if text.endswith('h'):
+        try:
+            hours = int(text[:-1])
+            until = datetime.now() + timedelta(hours=hours)
+            period_text = f"{hours} час(ов)"
+        except ValueError:
+            pass
+    elif text.endswith('m'):
+        try:
+            minutes = int(text[:-1])
+            until = datetime.now() + timedelta(minutes=minutes)
+            period_text = f"{minutes} минут"
+        except ValueError:
+            pass
+    elif text.endswith('d'):
+        try:
+            days = int(text[:-1])
+            until = datetime.now() + timedelta(days=days)
+            period_text = f"{days} дней"
+        except ValueError:
+            pass
+    elif text.endswith('w'):
+        try:
+            weeks = int(text[:-1])
+            until = datetime.now() + timedelta(weeks=weeks)
+            period_text = f"{weeks} недель"
+        except ValueError:
+            pass
+    else:
+        # Пробуем парсить дату
+        try:
+            until = datetime.strptime(text, "%d.%m.%Y %H:%M")
+            period_text = f"до {until.strftime('%d.%m.%Y %H:%M')}"
+        except ValueError:
+            pass
+    
+    if not until:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n\n"
+            f"Примеры:\n"
+            f"• `2h` - 2 часа\n"
+            f"• `30m` - 30 минут\n"
+            f"• `1d` - 1 день\n"
+            f"• `25.03.2026 18:00` - конкретная дата",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if until <= datetime.now():
+        await message.answer(f"{EMOJI['warning']} Время должно быть в будущем!")
+        return
+    
+    await state.clear()
+    
+    await db.close_registration(until, f"Закрыто администратором {period_text}")
+    
+    await message.answer(
+        f"🚫 *Регистрация закрыта!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏰ Период: *{period_text}*\n"
+        f"📅 Откроется: *{until.strftime('%d.%m.%Y %H:%M')}*\n\n"
+        f"⚠️ Все попытки регистрации будут приводить к автоматическому бану!",
+        reply_markup=get_registration_control_keyboard(is_closed=True),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data == "regcontrol:open")
+async def open_registration(callback: CallbackQuery):
+    """Открыть регистрацию"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_registration_control_keyboard
+    
+    await db.open_registration()
+    
+    await callback.message.edit_text(
+        f"✅ *Регистрация открыта!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Новые пользователи снова могут регистрироваться.",
+        reply_markup=get_registration_control_keyboard(is_closed=False),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Регистрация открыта!")
+
+
+@router.callback_query(F.data == "regcontrol:status")
+async def show_registration_status(callback: CallbackQuery):
+    """Показать статус регистрации"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_registration_control_keyboard
+    
+    is_closed = await db.is_registration_closed()
+    closed_until = await db.get_registration_closed_until()
+    reason = await db.get_registration_closed_reason()
+    
+    # Получаем статистику банов во время закрытия
+    stats = await db.get_registration_stats(days=7)
+    
+    if is_closed and closed_until:
+        time_left = closed_until - datetime.now()
+        hours_left = int(time_left.total_seconds() // 3600)
+        minutes_left = int((time_left.total_seconds() % 3600) // 60)
+        
+        status_text = (
+            f"🚫 *Статус: Закрыта*\n\n"
+            f"⏰ До открытия: *{hours_left}ч {minutes_left}мин*\n"
+            f"📅 Откроется: *{closed_until.strftime('%d.%m.%Y %H:%M')}*\n"
+        )
+        if reason:
+            status_text += f"📝 Причина: {reason}\n"
+    else:
+        status_text = f"✅ *Статус: Открыта*\n\n"
+    
+    status_text += (
+        f"\n📊 *Статистика за 7 дней:*\n"
+        f"├ Всего регистраций: *{stats['total']}*\n"
+        f"└ Из них забанено: *{stats['banned']}*"
+    )
+    
+    await callback.message.edit_text(
+        f"🚫 *СТАТУС РЕГИСТРАЦИИ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{status_text}",
+        reply_markup=get_registration_control_keyboard(is_closed),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+# ============ MASS BAN HANDLERS ============
+
+@router.callback_query(F.data == "admin:massban")
+async def show_mass_ban_menu(callback: CallbackQuery):
+    """Показать меню массового бана"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_mass_ban_keyboard
+    
+    await callback.message.edit_text(
+        f"📅 *МАССОВЫЙ БАН ПО ДАТЕ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Вы можете забанить всех пользователей,\n"
+        f"зарегистрированных в определённый период.\n\n"
+        f"⚠️ *Внимание:* Администраторы и модераторы\n"
+        f"не будут затронуты.\n\n"
+        f"Выберите период:",
+        reply_markup=get_mass_ban_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("massban:period:"))
+async def mass_ban_select_period(callback: CallbackQuery):
+    """Выбрать период для массового бана"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_mass_ban_confirm_keyboard, get_mass_ban_keyboard
+    from datetime import timedelta
+    
+    period = callback.data.split(":")[2]
+    
+    # Определяем период
+    now = datetime.now()
+    if period == "1h":
+        from_date = now - timedelta(hours=1)
+        period_text = "последний час"
+    elif period == "6h":
+        from_date = now - timedelta(hours=6)
+        period_text = "последние 6 часов"
+    elif period == "24h":
+        from_date = now - timedelta(hours=24)
+        period_text = "последние 24 часа"
+    elif period == "7d":
+        from_date = now - timedelta(days=7)
+        period_text = "последнюю неделю"
+    else:
+        await callback.answer("Неизвестный период!", show_alert=True)
+        return
+    
+    # Получаем пользователей для бана
+    users = await db.get_users_registered_between(from_date, now, include_banned=False)
+    
+    # Фильтруем админов и модераторов
+    users_to_ban = [u for u in users if not u.get('is_admin') and not u.get('is_moderator')]
+    
+    if not users_to_ban:
+        await callback.message.edit_text(
+            f"📅 *Массовый бан*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"За {period_text} нет пользователей для бана.\n"
+            f"(Админы и модераторы не учитываются)",
+            reply_markup=get_mass_ban_keyboard(),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+    
+    # Сохраняем timestamps в формате ISO для callback_data
+    from_ts = from_date.isoformat()
+    to_ts = now.isoformat()
+    
+    await callback.message.edit_text(
+        f"📅 *Массовый бан*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⏰ Период: *{period_text}*\n"
+        f"👥 Найдено пользователей: *{len(users_to_ban)}*\n\n"
+        f"⚠️ *Это действие нельзя отменить!*\n"
+        f"Все указанные пользователи будут забанены.",
+        reply_markup=get_mass_ban_confirm_keyboard(from_ts, to_ts, len(users_to_ban)),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("massban:confirm:"))
+async def confirm_mass_ban(callback: CallbackQuery):
+    """Подтвердить массовый бан"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_mass_ban_result_keyboard
+    
+    parts = callback.data.split(":")
+    from_ts = parts[2]
+    to_ts = parts[3]
+    
+    try:
+        from_date = datetime.fromisoformat(from_ts)
+        to_date = datetime.fromisoformat(to_ts)
+    except ValueError:
+        await callback.answer("Ошибка парсинга даты!", show_alert=True)
+        return
+    
+    # Выполняем массовый бан
+    result = await db.ban_users_registered_between(
+        from_date, to_date,
+        exclude_admins=True,
+        exclude_moderators=True
+    )
+    
+    banned_count = result['banned_count']
+    
+    await callback.message.edit_text(
+        f"🚫 *Массовый бан выполнен!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👥 Забанено пользователей: *{banned_count}*\n"
+        f"📅 Период: с {from_date.strftime('%d.%m.%Y %H:%M')}\n"
+        f"         до {to_date.strftime('%d.%m.%Y %H:%M')}\n\n"
+        f"✅ Операция завершена.",
+        reply_markup=get_mass_ban_result_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer(f"Забанено {banned_count} пользователей!")
+
+
+@router.callback_query(F.data.startswith("massban:list:"))
+async def show_mass_ban_list(callback: CallbackQuery):
+    """Показать список пользователей для бана"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    parts = callback.data.split(":")
+    from_ts = parts[2]
+    to_ts = parts[3]
+    
+    try:
+        from_date = datetime.fromisoformat(from_ts)
+        to_date = datetime.fromisoformat(to_ts)
+    except ValueError:
+        await callback.answer("Ошибка парсинга даты!", show_alert=True)
+        return
+    
+    # Получаем пользователей
+    users = await db.get_users_registered_between(from_date, to_date, include_banned=False)
+    users_to_ban = [u for u in users if not u.get('is_admin') and not u.get('is_moderator')]
+    
+    if not users_to_ban:
+        await callback.answer("Нет пользователей для бана!", show_alert=True)
+        return
+    
+    # Формируем список (первые 20)
+    list_text = f"📋 *Список пользователей для бана*\n"
+    list_text += f"━━━━━━━━━━━━━━━━━━━━\n\n"
+    list_text += f"Всего: *{len(users_to_ban)}*\n\n"
+    
+    for i, user in enumerate(users_to_ban[:20], 1):
+        username = user.get('username') or user.get('game_nickname') or f"ID:{user['user_id']}"
+        reg_date = user.get('registered_at', '')
+        if isinstance(reg_date, str) and reg_date:
+            reg_date = reg_date[:16]
+        list_text += f"{i}. {username} ({reg_date})\n"
+    
+    if len(users_to_ban) > 20:
+        list_text += f"\n... и ещё {len(users_to_ban) - 20}"
+    
+    await callback.message.answer(list_text, parse_mode="Markdown")
+    await callback.answer()
+
+
 @router.callback_query(F.data == "admin:backup")
-async def backup_database_callback(callback: CallbackQuery):
-    """Создать бэкап через кнопку в админ-панели"""
+async def create_backup_callback(callback: CallbackQuery):
+    """Создать бэкап базы данных через callback"""
     if not await is_admin(callback.from_user.id):
         await callback.answer("Только для администраторов!", show_alert=True)
         return
@@ -2908,3 +3352,297 @@ async def backup_database_callback(callback: CallbackQuery):
             parse_mode="Markdown"
         )
         await callback.answer("Ошибка!", show_alert=True)
+
+
+# ============ BLOCKED REGISTRATION ATTEMPTS HANDLERS ============
+
+@router.callback_query(F.data == "regcontrol:attempts")
+async def show_blocked_registration_attempts(callback: CallbackQuery):
+    """Показать заблокированные попытки регистрации"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_registration_control_keyboard
+    
+    # Получаем заблокированные попытки
+    attempts = await db.get_blocked_registration_attempts(limit=20)
+    today_count = await db.get_blocked_registration_count_today()
+    
+    if not attempts:
+        await callback.message.edit_text(
+            f"📋 *ЗАБЛОКИРОВАННЫЕ ПОПЫТКИ РЕГИСТРАЦИИ*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Пока нет заблокированных попыток регистрации.\n\n"
+            f"Попытки регистрации при закрытой регистрации\n"
+            f"автоматически банятся и логируются здесь.",
+            reply_markup=get_registration_control_keyboard(is_closed=True),
+            parse_mode="Markdown"
+        )
+        await callback.answer()
+        return
+    
+    text = (
+        f"📋 *ЗАБЛОКИРОВАННЫЕ ПОПЫТКИ РЕГИСТРАЦИИ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 За сегодня: *{today_count}*\n"
+        f"📋 Всего показано: *{len(attempts)}*\n\n"
+    )
+    
+    for i, attempt in enumerate(attempts, 1):
+        user_info = f"ID: `{attempt['user_id']}`"
+        if attempt.get('username'):
+            user_info += f" (@{attempt['username']})"
+        if attempt.get('full_name'):
+            user_info += f" - {attempt['full_name']}"
+        
+        attempted_at = attempt.get('attempted_at', '')
+        if isinstance(attempted_at, str):
+            attempted_at = attempted_at[:16]  # Обрезаем до минут
+        
+        ban_status = "🚫 Забанен" if attempt.get('ban_applied') else "⚠️ Не забанен"
+        
+        text += f"{i}. {user_info}\n"
+        text += f"   📅 {attempted_at} | {ban_status}\n\n"
+    
+    # Создаём клавиатуру с кнопкой назад
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Обновить", callback_data="regcontrol:attempts")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin:registration")]
+    ])
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "massban:cancel")
+async def cancel_mass_ban(callback: CallbackQuery):
+    """Отменить массовый бан"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_mass_ban_keyboard
+    
+    await callback.message.edit_text(
+        f"📅 *МАССОВЫЙ БАН ПО ДАТЕ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Вы можете забанить всех пользователей,\n"
+        f"зарегистрированных в определённый период.\n\n"
+        f"⚠️ *Внимание:* Администраторы и модераторы\n"
+        f"не будут затронуты.\n\n"
+        f"Выберите период:",
+        reply_markup=get_mass_ban_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer("Отменено")
+
+
+@router.callback_query(F.data == "massban:custom")
+async def mass_ban_custom_period(callback: CallbackQuery, state: FSMContext):
+    """Начать ввод кастомного периода для массового бана"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_cancel_input_keyboard
+    
+    await state.set_state(AdminStates.waiting_custom_period_from)
+    
+    await callback.message.edit_text(
+        f"{EMOJI['gear']} *Массовый бан - кастомный период*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📅 *Шаг 1/2* - Введите дату *НАЧАЛА* периода:\n\n"
+        f"Формат: `ДД.ММ.ГГГГ ЧЧ:ММ`\n"
+        f"Пример: `15.03.2026 00:00`\n\n"
+        f"Или введите относительное время:\n"
+        f"• `24h` - 24 часа назад\n"
+        f"• `7d` - 7 дней назад\n"
+        f"• `1w` - 1 неделя назад",
+        reply_markup=get_cancel_input_keyboard(0),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_custom_period_from)
+async def process_custom_period_from(message: Message, state: FSMContext):
+    """Обработать дату начала кастомного периода"""
+    if not await is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    from datetime import timedelta
+    from keyboards import get_cancel_input_keyboard
+    
+    text = message.text.strip().lower()
+    from_date = None
+    
+    # Парсим относительное время
+    if text.endswith('h'):
+        try:
+            hours = int(text[:-1])
+            from_date = datetime.now() - timedelta(hours=hours)
+        except ValueError:
+            pass
+    elif text.endswith('d'):
+        try:
+            days = int(text[:-1])
+            from_date = datetime.now() - timedelta(days=days)
+        except ValueError:
+            pass
+    elif text.endswith('w'):
+        try:
+            weeks = int(text[:-1])
+            from_date = datetime.now() - timedelta(weeks=weeks)
+        except ValueError:
+            pass
+    else:
+        # Пробуем парсить дату
+        try:
+            from_date = datetime.strptime(text, "%d.%m.%Y %H:%M")
+        except ValueError:
+            pass
+    
+    if not from_date:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n\n"
+            f"Примеры:\n"
+            f"• `15.03.2026 00:00` - конкретная дата\n"
+            f"• `24h` - 24 часа назад\n"
+            f"• `7d` - 7 дней назад",
+            parse_mode="Markdown"
+        )
+        return
+    
+    if from_date > datetime.now():
+        await message.answer(f"{EMOJI['warning']} Дата начала не может быть в будущем!")
+        return
+    
+    await state.update_data(custom_from_date=from_date.isoformat())
+    await state.set_state(AdminStates.waiting_custom_period_to)
+    
+    await message.answer(
+        f"{EMOJI['check']} Начало периода: *{from_date.strftime('%d.%m.%Y %H:%M')}*\n\n"
+        f"📅 *Шаг 2/2* - Введите дату *КОНЦА* периода:\n\n"
+        f"Формат: `ДД.ММ.ГГГГ ЧЧ:ММ`\n"
+        f"Пример: `19.03.2026 23:59`\n\n"
+        f"Или введите `now` для текущего момента.",
+        reply_markup=get_cancel_input_keyboard(0),
+        parse_mode="Markdown"
+    )
+
+
+@router.message(AdminStates.waiting_custom_period_to)
+async def process_custom_period_to(message: Message, state: FSMContext):
+    """Обработать дату конца кастомного периода"""
+    if not await is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    from keyboards import get_mass_ban_confirm_keyboard, get_mass_ban_keyboard
+    
+    text = message.text.strip().lower()
+    to_date = None
+    
+    if text == 'now':
+        to_date = datetime.now()
+    else:
+        try:
+            to_date = datetime.strptime(text, "%d.%m.%Y %H:%M")
+        except ValueError:
+            pass
+    
+    if not to_date:
+        await message.answer(
+            f"{EMOJI['warning']} Неверный формат!\n\n"
+            f"Примеры:\n"
+            f"• `19.03.2026 23:59` - конкретная дата\n"
+            f"• `now` - текущий момент",
+            parse_mode="Markdown"
+        )
+        return
+    
+    data = await state.get_data()
+    from_date = datetime.fromisoformat(data['custom_from_date'])
+    
+    if to_date <= from_date:
+        await message.answer(f"{EMOJI['warning']} Дата конца должна быть позже даты начала!")
+        return
+    
+    if to_date > datetime.now():
+        to_date = datetime.now()
+    
+    await state.clear()
+    
+    # Получаем пользователей для бана
+    users = await db.get_users_registered_between(from_date, to_date, include_banned=False)
+    
+    # Фильтруем админов и модераторов
+    users_to_ban = [u for u in users if not u.get('is_admin') and not u.get('is_moderator')]
+    
+    if not users_to_ban:
+        await message.answer(
+            f"📅 *Массовый бан - кастомный период*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📆 С: *{from_date.strftime('%d.%m.%Y %H:%M')}*\n"
+            f"📆 По: *{to_date.strftime('%d.%m.%Y %H:%M')}*\n\n"
+            f"В указанный период нет пользователей для бана.\n"
+            f"(Админы и модераторы не учитываются)",
+            reply_markup=get_mass_ban_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Сохраняем timestamps
+    from_ts = from_date.isoformat()
+    to_ts = to_date.isoformat()
+    
+    await message.answer(
+        f"📅 *Массовый бан - кастомный период*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📆 С: *{from_date.strftime('%d.%m.%Y %H:%M')}*\n"
+        f"📆 По: *{to_date.strftime('%d.%m.%Y %H:%M')}*\n\n"
+        f"👥 Найдено пользователей: *{len(users_to_ban)}*\n\n"
+        f"⚠️ *Это действие нельзя отменить!*\n"
+        f"Все указанные пользователи будут забанены.",
+        reply_markup=get_mass_ban_confirm_keyboard(from_ts, to_ts, len(users_to_ban)),
+        parse_mode="Markdown"
+    )
+
+
+@router.callback_query(F.data == "massban:stats")
+async def show_registration_stats(callback: CallbackQuery):
+    """Показать статистику регистраций"""
+    if not await is_admin(callback.from_user.id):
+        await callback.answer("Только для администраторов!", show_alert=True)
+        return
+    
+    from keyboards import get_mass_ban_keyboard
+    
+    stats = await db.get_registration_stats(days=7)
+    
+    text = (
+        f"📊 *СТАТИСТИКА РЕГИСТРАЦИЙ*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📅 Период: последние 7 дней\n\n"
+        f"👥 Всего регистраций: *{stats['total']}*\n"
+        f"🚫 Из них забанено: *{stats['banned']}*\n\n"
+    )
+    
+    if stats.get('by_day'):
+        text += "*По дням:*\n"
+        for date, count in sorted(stats['by_day'].items(), reverse=True):
+            text += f"  • {date}: *{count}*\n"
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_mass_ban_keyboard(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()

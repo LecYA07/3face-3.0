@@ -7,6 +7,15 @@ from datetime import datetime
 async def init_db():
     """Инициализация базы данных"""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Таблица системных настроек
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
         # Таблица пользователей
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -270,6 +279,18 @@ async def init_db():
             await db.execute("ALTER TABLE lobby_players ADD COLUMN lobby_message_id INTEGER DEFAULT NULL")
         except Exception:
             pass  # Столбец уже существует
+        
+        # Таблица логирования попыток регистрации при закрытой регистрации
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS blocked_registration_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                full_name TEXT,
+                ban_applied INTEGER DEFAULT 1,
+                attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         await db.commit()
 
@@ -1956,3 +1977,318 @@ async def get_all_admins_and_moderators() -> List[Dict[str, Any]]:
                 existing_ids.add(mod_id)
         
         return result
+
+
+# ============ SYSTEM SETTINGS FUNCTIONS ============
+
+async def get_system_setting(key: str) -> Optional[str]:
+    """Получить системную настройку по ключу"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        async with db.execute(
+            "SELECT value FROM system_settings WHERE key = ?",
+            (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def set_system_setting(key: str, value: str) -> None:
+    """Установить системную настройку"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO system_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+        """, (key, value, datetime.now()))
+        await db.commit()
+
+
+async def delete_system_setting(key: str) -> None:
+    """Удалить системную настройку"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM system_settings WHERE key = ?", (key,))
+        await db.commit()
+
+
+async def is_registration_closed() -> bool:
+    """Проверить, закрыта ли регистрация"""
+    value = await get_system_setting("registration_closed_until")
+    if not value:
+        return False
+    
+    try:
+        closed_until = datetime.fromisoformat(value)
+        return datetime.now() < closed_until
+    except (ValueError, TypeError):
+        return False
+
+
+async def get_registration_closed_until() -> Optional[datetime]:
+    """Получить время до которого закрыта регистрация"""
+    value = await get_system_setting("registration_closed_until")
+    if not value:
+        return None
+    
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+async def close_registration(until: datetime, reason: str = None) -> None:
+    """Закрыть регистрацию до указанного времени"""
+    await set_system_setting("registration_closed_until", until.isoformat())
+    if reason:
+        await set_system_setting("registration_closed_reason", reason)
+
+
+async def open_registration() -> None:
+    """Открыть регистрацию"""
+    await delete_system_setting("registration_closed_until")
+    await delete_system_setting("registration_closed_reason")
+
+
+async def get_registration_closed_reason() -> Optional[str]:
+    """Получить причину закрытия регистрации"""
+    return await get_system_setting("registration_closed_reason")
+
+
+# ============ MASS BAN FUNCTIONS ============
+
+async def get_users_registered_between(
+    from_date: datetime, 
+    to_date: datetime,
+    include_banned: bool = False
+) -> List[Dict[str, Any]]:
+    """
+    Получить пользователей, зарегистрированных в указанный промежуток времени
+    
+    Args:
+        from_date: Начало периода
+        to_date: Конец периода
+        include_banned: Включать уже забаненных пользователей
+    
+    Returns:
+        Список пользователей
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        if include_banned:
+            query = """
+                SELECT * FROM users 
+                WHERE registered_at >= ? AND registered_at <= ?
+                ORDER BY registered_at DESC
+            """
+        else:
+            query = """
+                SELECT * FROM users 
+                WHERE registered_at >= ? AND registered_at <= ? AND is_banned = 0
+                ORDER BY registered_at DESC
+            """
+        
+        async with db.execute(query, (from_date.isoformat(), to_date.isoformat())) as cursor:
+            rows = await cursor.fetchall()
+        
+        return [dict(row) for row in rows]
+
+
+async def ban_users_by_ids(user_ids: List[int]) -> int:
+    """
+    Забанить пользователей по списку ID
+    
+    Args:
+        user_ids: Список ID пользователей для бана
+    
+    Returns:
+        Количество забаненных пользователей
+    """
+    if not user_ids:
+        return 0
+    
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        placeholders = ','.join('?' * len(user_ids))
+        cursor = await db.execute(
+            f"UPDATE users SET is_banned = 1 WHERE user_id IN ({placeholders}) AND is_banned = 0",
+            user_ids
+        )
+        banned_count = cursor.rowcount
+        await db.commit()
+        return banned_count
+
+
+async def ban_users_registered_between(
+    from_date: datetime, 
+    to_date: datetime,
+    exclude_admins: bool = True,
+    exclude_moderators: bool = True
+) -> Dict[str, Any]:
+    """
+    Забанить всех пользователей, зарегистрированных в указанный промежуток времени
+    
+    Args:
+        from_date: Начало периода
+        to_date: Конец периода
+        exclude_admins: Исключить администраторов
+        exclude_moderators: Исключить модераторов
+    
+    Returns:
+        Словарь с информацией о результате:
+        - banned_count: количество забаненных
+        - users: список забаненных пользователей
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Строим условие исключения
+        exclude_conditions = ["is_banned = 0"]
+        if exclude_admins:
+            exclude_conditions.append("is_admin = 0")
+        if exclude_moderators:
+            exclude_conditions.append("is_moderator = 0")
+        
+        exclude_sql = " AND ".join(exclude_conditions)
+        
+        # Получаем пользователей для бана
+        query = f"""
+            SELECT * FROM users 
+            WHERE registered_at >= ? AND registered_at <= ? AND {exclude_sql}
+            ORDER BY registered_at DESC
+        """
+        
+        async with db.execute(query, (from_date.isoformat(), to_date.isoformat())) as cursor:
+            rows = await cursor.fetchall()
+        
+        users_to_ban = [dict(row) for row in rows]
+        
+        if not users_to_ban:
+            return {'banned_count': 0, 'users': []}
+        
+        # Баним пользователей
+        user_ids = [u['user_id'] for u in users_to_ban]
+        placeholders = ','.join('?' * len(user_ids))
+        
+        await db.execute(
+            f"UPDATE users SET is_banned = 1 WHERE user_id IN ({placeholders})",
+            user_ids
+        )
+        await db.commit()
+        
+        return {
+            'banned_count': len(users_to_ban),
+            'users': users_to_ban
+        }
+
+
+async def log_blocked_registration_attempt(
+    user_id: int,
+    username: str = None,
+    full_name: str = None,
+    ban_applied: bool = True
+) -> int:
+    """
+    Залогировать попытку регистрации при закрытой регистрации.
+    
+    Args:
+        user_id: Telegram ID пользователя
+        username: Telegram username
+        full_name: Полное имя пользователя
+        ban_applied: Был ли применён автоматический бан
+    
+    Returns:
+        ID записи лога
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute("""
+            INSERT INTO blocked_registration_attempts 
+            (user_id, username, full_name, ban_applied, attempted_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user_id, username, full_name, 1 if ban_applied else 0, datetime.now()))
+        log_id = cursor.lastrowid
+        await db.commit()
+        return log_id
+
+
+async def get_blocked_registration_attempts(limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Получить список попыток регистрации при закрытой регистрации.
+    
+    Args:
+        limit: Максимальное количество записей
+    
+    Returns:
+        Список попыток
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT * FROM blocked_registration_attempts
+            ORDER BY attempted_at DESC
+            LIMIT ?
+        """
+        async with db.execute(query, (limit,)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_blocked_registration_count_today() -> int:
+    """Получить количество заблокированных попыток регистрации за сегодня"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        async with db.execute(
+            "SELECT COUNT(*) FROM blocked_registration_attempts WHERE attempted_at >= ?",
+            (today_start.isoformat(),)
+        ) as cursor:
+            return (await cursor.fetchone())[0]
+
+
+async def get_registration_stats(days: int = 7) -> Dict[str, Any]:
+    """
+    Получить статистику регистраций за последние N дней
+    
+    Args:
+        days: Количество дней для анализа
+    
+    Returns:
+        Словарь со статистикой:
+        - total: общее количество за период
+        - by_day: словарь {дата: количество}
+        - banned: количество забаненных за период
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        from_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        from_date = from_date.replace(day=from_date.day - days + 1)
+        
+        # Общее количество за период
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE registered_at >= ?",
+            (from_date.isoformat(),)
+        ) as cursor:
+            total = (await cursor.fetchone())[0]
+        
+        # Забаненные за период
+        async with db.execute(
+            "SELECT COUNT(*) FROM users WHERE registered_at >= ? AND is_banned = 1",
+            (from_date.isoformat(),)
+        ) as cursor:
+            banned = (await cursor.fetchone())[0]
+        
+        # По дням
+        by_day = {}
+        async with db.execute("""
+            SELECT DATE(registered_at) as reg_date, COUNT(*) as count
+            FROM users 
+            WHERE registered_at >= ?
+            GROUP BY DATE(registered_at)
+            ORDER BY reg_date
+        """, (from_date.isoformat(),)) as cursor:
+            rows = await cursor.fetchall()
+            for row in rows:
+                by_day[row[0]] = row[1]
+        
+        return {
+            'total': total,
+            'by_day': by_day,
+            'banned': banned,
+            'from_date': from_date.isoformat(),
+            'days': days
+        }
