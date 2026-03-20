@@ -546,24 +546,42 @@ def format_party_info(party: Dict[str, Any], members: List[Dict[str, Any]],
 
 def format_history_entry(match: Dict[str, Any], user_team: int) -> str:
     """Форматировать запись из истории матчей"""
-    is_winner = match.get('winner_team') == user_team
-    result = f"{EMOJI['check']} Победа" if is_winner else f"{EMOJI['cross']} Поражение"
+    # Проверяем, отменён ли матч
+    is_cancelled = match.get('status') == 'cancelled'
     
-    kills = match.get('kills', 0)
-    deaths = match.get('deaths', 0)
-    assists = match.get('assists', 0)
-    rating_change = match.get('rating_change', 0)
-    sign = "+" if rating_change >= 0 else ""
-    
-    mvp = f" {EMOJI['star']}" if match.get('is_mvp') else ""
-    
-    return (
-        f"\n{EMOJI['game']} Матч #{match['match_id']}{mvp}\n"
-        f"├ {EMOJI['map']} {match['map_name']}\n"
-        f"├ {result} ({match['team1_score']}:{match['team2_score']})\n"
-        f"├ K/D/A: {kills}/{deaths}/{assists}\n"
-        f"└ Рейтинг: {sign}{rating_change}\n"
-    )
+    if is_cancelled:
+        # Отменённый матч
+        kills = match.get('kills', 0)
+        deaths = match.get('deaths', 0)
+        assists = match.get('assists', 0)
+        
+        return (
+            f"\n🚫 Матч #{match['match_id']} *ОТМЕНЁН*\n"
+            f"├ {EMOJI['map']} {match['map_name']}\n"
+            f"├ Счёт был: {match['team1_score']}:{match['team2_score']}\n"
+            f"├ K/D/A: {kills}/{deaths}/{assists}\n"
+            f"└ Рейтинг возвращён\n"
+        )
+    else:
+        # Обычный завершённый матч
+        is_winner = match.get('winner_team') == user_team
+        result = f"{EMOJI['check']} Победа" if is_winner else f"{EMOJI['cross']} Поражение"
+        
+        kills = match.get('kills', 0)
+        deaths = match.get('deaths', 0)
+        assists = match.get('assists', 0)
+        rating_change = match.get('rating_change', 0)
+        sign = "+" if rating_change >= 0 else ""
+        
+        mvp = f" {EMOJI['star']}" if match.get('is_mvp') else ""
+        
+        return (
+            f"\n{EMOJI['game']} Матч #{match['match_id']}{mvp}\n"
+            f"├ {EMOJI['map']} {match['map_name']}\n"
+            f"├ {result} ({match['team1_score']}:{match['team2_score']})\n"
+            f"├ K/D/A: {kills}/{deaths}/{assists}\n"
+            f"└ Рейтинг: {sign}{rating_change}\n"
+        )
 
 
 def format_queue_status(queue_count: int, platform: str, game_format: str = "5x5") -> str:

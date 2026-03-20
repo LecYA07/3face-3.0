@@ -419,13 +419,19 @@ async def show_ban_menu(callback: CallbackQuery):
         return
     
     await callback.message.edit_text(
-        f"{EMOJI['lock']} <b>УПРАВЛЕНИЕ БАНАМИ</b>\n"
+        f"{EMOJI['lock']} <b>УПРАВЛЕНИЕ БАНАМИ И МАТЧАМИ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Используйте команды:\n\n"
+        f"<b>Команды для банов:</b>\n"
         f"<code>/ban @username</code> - забанить игрока\n"
         f"<code>/unban @username</code> - разбанить игрока\n\n"
         f"Или укажите user_id:\n"
-        f"<code>/ban 123456789</code>",
+        f"<code>/ban 123456789</code>\n\n"
+        f"<b>⚠️ При бане игрока:</b>\n"
+        f"• Все его завершённые матчи автоматически отменяются\n"
+        f"• Рейтинг возвращается всем участникам матчей\n\n"
+        f"<b>Отмена матчей:</b>\n"
+        f"<code>/cancelmatch 123</code> - отменить матч по ID\n\n"
+        f"<i>Отменённые матчи помечаются как 🚫 в истории</i>",
         reply_markup=get_admin_menu_keyboard(),
         parse_mode="HTML"
     )
@@ -468,7 +474,7 @@ async def show_roles_menu(callback: CallbackQuery):
 
 @router.message(F.text.startswith("/ban"))
 async def ban_user_command(message: Message):
-    """Забанить пользователя"""
+    """Забанить пользователя и отменить все его матчи"""
     if not await is_admin(message.from_user.id):
         await message.answer(f"{EMOJI['lock']} Только для администраторов!")
         return
@@ -489,9 +495,109 @@ async def ban_user_command(message: Message):
         await message.answer(f"{EMOJI['warning']} Пользователь не найден!")
         return
     
+    if user.get('is_banned'):
+        await message.answer(f"{EMOJI['warning']} Пользователь уже забанен!")
+        return
+    
+    # Баним пользователя
     await db.ban_user(user['user_id'])
+    
+    # Отменяем все матчи этого игрока
+    cancel_result = await db.cancel_all_user_matches(user['user_id'])
+    cancelled_count = cancel_result['cancelled_count']
+    
+    if cancelled_count > 0:
+        await message.answer(
+            f"{EMOJI['check']} *Пользователь забанен!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🆔 ID: `{user['user_id']}`\n"
+            f"👤 Username: @{user.get('username', 'unknown')}\n\n"
+            f"🚫 *Отменено матчей:* {cancelled_count}\n"
+            f"📋 ID матчей: {', '.join(map(str, cancel_result['match_ids'][:10]))}"
+            f"{'...' if len(cancel_result['match_ids']) > 10 else ''}\n\n"
+            f"⚠️ Рейтинг за эти матчи возвращён всем участникам.",
+            parse_mode="Markdown"
+        )
+    else:
+        await message.answer(
+            f"{EMOJI['check']} Пользователь `{user['user_id']}` (@{user.get('username', 'unknown')}) забанен.\n\n"
+            f"У игрока не было завершённых матчей для отмены.",
+            parse_mode="Markdown"
+        )
+
+
+@router.message(F.text.startswith("/cancelmatch"))
+async def cancel_match_command(message: Message):
+    """Отменить завершённый матч и вернуть рейтинг всем участникам"""
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer(
+            f"{EMOJI['warning']} Укажите ID матча!\n"
+            f"Пример: `/cancelmatch 123`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    try:
+        match_id = int(args[1])
+    except ValueError:
+        await message.answer(f"{EMOJI['warning']} ID матча должен быть числом!")
+        return
+    
+    # Получаем информацию о матче
+    match = await db.get_match(match_id)
+    if not match:
+        await message.answer(f"{EMOJI['warning']} Матч #{match_id} не найден!")
+        return
+    
+    if match['status'] == 'cancelled':
+        await message.answer(f"{EMOJI['warning']} Матч #{match_id} уже отменён!")
+        return
+    
+    if match['status'] != 'finished':
+        await message.answer(
+            f"{EMOJI['warning']} Можно отменить только завершённые матчи!\n"
+            f"Статус матча #{match_id}: `{match['status']}`",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Получаем игроков матча для отображения информации
+    players = await db.get_match_players_stats(match_id)
+    
+    # Отменяем матч
+    result = await db.cancel_finished_match(match_id)
+    
+    if not result['success']:
+        await message.answer(
+            f"{EMOJI['warning']} Ошибка отмены матча: {result.get('error', 'Неизвестная ошибка')}"
+        )
+        return
+    
+    # Формируем информацию о возвращённом рейтинге
+    rating_info = ""
+    for player in players:
+        user_id = player['user_id']
+        username = player.get('game_nickname') or player.get('username') or str(user_id)
+        old_rating_change = player.get('rating_change', 0)
+        reverted = -old_rating_change  # Возвращаем обратно
+        sign = "+" if reverted >= 0 else ""
+        rating_info += f"  • {username}: {sign}{reverted}\n"
+    
     await message.answer(
-        f"{EMOJI['check']} Пользователь `{user['user_id']}` (@{user.get('username', 'unknown')}) забанен.",
+        f"{EMOJI['check']} *Матч #{match_id} отменён!*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📋 *Информация о матче:*\n"
+        f"  • Карта: {match.get('map_name', 'Неизвестно')}\n"
+        f"  • Счёт был: {match.get('team1_score', 0)}:{match.get('team2_score', 0)}\n"
+        f"  • Победитель была: Команда {match.get('winner_team', '?')}\n\n"
+        f"📊 *Возвращённый рейтинг:*\n{rating_info}\n"
+        f"⚠️ Статистика всех участников откачена.\n"
+        f"В истории матчей он будет помечен как отменённый.",
         parse_mode="Markdown"
     )
 
@@ -1268,6 +1374,80 @@ async def backup_database(message: Message):
             f"Причина: `{str(e)}`",
             parse_mode="Markdown"
         )
+
+
+@router.message(F.document, F.caption.startswith("/restoredb"))
+async def restore_db_from_document(message: Message):
+    """
+    Восстановить БД из присланного файла.
+
+    Использование:
+    - админ отправляет файл database.db (или любой .db)
+    - в подписи к файлу: /restoredb
+    """
+    if not await is_admin(message.from_user.id):
+        await message.answer(f"{EMOJI['lock']} Только для администраторов!")
+        return
+
+    if not message.document:
+        await message.answer(f"{EMOJI['warning']} Пришлите файл базы данных документом.")
+        return
+
+    # Скачиваем во временный файл
+    os.makedirs("backups", exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp_path = os.path.join("backups", f"restore_tmp_{timestamp}.db")
+
+    try:
+        # Небольшая валидация имени/расширения
+        doc_name = (message.document.file_name or "").lower()
+        if doc_name and not (doc_name.endswith(".db") or doc_name.endswith(".sqlite") or doc_name.endswith(".sqlite3")):
+            await message.answer(
+                f"{EMOJI['warning']} Файл должен быть .db/.sqlite/.sqlite3 (пришли: {message.document.file_name})."
+            )
+            return
+
+        file = await message.bot.get_file(message.document.file_id)
+        await message.bot.download_file(file.file_path, destination=tmp_path)
+
+        # Бэкап текущей БД перед заменой
+        current_backup = os.path.join("backups", f"backup_before_restore_{timestamp}.db")
+        if os.path.exists(DATABASE_PATH):
+            shutil.copy2(DATABASE_PATH, current_backup)
+
+        # Простейшая проверка что это sqlite (первые 16 байт)
+        with open(tmp_path, "rb") as f:
+            header = f.read(16)
+        if header != b"SQLite format 3\\x00":
+            await message.answer(
+                f"{EMOJI['warning']} Файл не похож на SQLite базу данных. Восстановление отменено."
+            )
+            return
+
+        # Подменяем файл БД
+        shutil.copy2(tmp_path, DATABASE_PATH)
+
+        await message.answer(
+            f"{EMOJI['check']} *База данных восстановлена из бэкапа!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ Новый файл установлен: `{message.document.file_name}`\n"
+            f"💾 Старый файл сохранён: `{os.path.basename(current_backup)}`\n\n"
+            f"⚠️ Для применения требуется перезапуск.\n"
+            f"Используйте команду /restart",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await message.answer(
+            f"{EMOJI['warning']} *Ошибка восстановления БД!*\n\n"
+            f"Причина: `{str(e)}`",
+            parse_mode="Markdown"
+        )
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 # ============ UPDATE COMMAND ============
@@ -2695,7 +2875,7 @@ async def back_to_player_info(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("editstats:ban:"))
 async def ban_player_from_search(callback: CallbackQuery):
-    """Забанить игрока из поиска"""
+    """Забанить игрока из поиска и отменить все его матчи"""
     if not await is_admin(callback.from_user.id):
         await callback.answer("Только для администраторов!", show_alert=True)
         return
@@ -2713,18 +2893,39 @@ async def ban_player_from_search(callback: CallbackQuery):
         await callback.answer("Игрок уже забанен!", show_alert=True)
         return
     
+    # Баним пользователя
     await db.ban_user(user_id)
+    
+    # Отменяем все матчи этого игрока
+    cancel_result = await db.cancel_all_user_matches(user_id)
+    cancelled_count = cancel_result['cancelled_count']
+    
     username = user.get('game_nickname') or user.get('username') or str(user_id)
     
-    await callback.message.edit_text(
-        f"{EMOJI['lock']} *Игрок забанен!*\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 Игрок: *{username}*\n"
-        f"🆔 ID: `{user_id}`\n\n"
-        f"Игрок больше не сможет пользоваться ботом.",
-        reply_markup=get_player_info_keyboard(user_id, is_admin=True),
-        parse_mode="Markdown"
-    )
+    if cancelled_count > 0:
+        await callback.message.edit_text(
+            f"{EMOJI['lock']} *Игрок забанен!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Игрок: *{username}*\n"
+            f"🆔 ID: `{user_id}`\n\n"
+            f"🚫 *Отменено матчей:* {cancelled_count}\n"
+            f"📋 ID матчей: {', '.join(map(str, cancel_result['match_ids'][:10]))}"
+            f"{'...' if len(cancel_result['match_ids']) > 10 else ''}\n\n"
+            f"⚠️ Рейтинг за эти матчи возвращён всем участникам.",
+            reply_markup=get_player_info_keyboard(user_id, is_admin=True),
+            parse_mode="Markdown"
+        )
+    else:
+        await callback.message.edit_text(
+            f"{EMOJI['lock']} *Игрок забанен!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 Игрок: *{username}*\n"
+            f"🆔 ID: `{user_id}`\n\n"
+            f"Игрок больше не сможет пользоваться ботом.\n"
+            f"У игрока не было завершённых матчей для отмены.",
+            reply_markup=get_player_info_keyboard(user_id, is_admin=True),
+            parse_mode="Markdown"
+        )
     await callback.answer("Игрок забанен!")
 
 

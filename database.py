@@ -1144,18 +1144,35 @@ async def get_pending_matches() -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-async def get_user_match_history(user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-    """Получить историю матчей пользователя"""
+async def get_user_match_history(user_id: int, limit: int = 10, include_cancelled: bool = True) -> List[Dict[str, Any]]:
+    """
+    Получить историю матчей пользователя.
+    
+    Args:
+        user_id: ID пользователя
+        limit: Максимальное количество матчей
+        include_cancelled: Включать отменённые матчи (по умолчанию True)
+    """
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
-        query = """
-            SELECT m.*, mp.team, mp.kills, mp.deaths, mp.assists, mp.is_mvp, mp.rating_change
-            FROM matches m
-            JOIN match_players mp ON m.match_id = mp.match_id
-            WHERE mp.user_id = ? AND m.status = 'finished'
-            ORDER BY m.finished_at DESC
-            LIMIT ?
-        """
+        if include_cancelled:
+            query = """
+                SELECT m.*, mp.team, mp.kills, mp.deaths, mp.assists, mp.is_mvp, mp.rating_change
+                FROM matches m
+                JOIN match_players mp ON m.match_id = mp.match_id
+                WHERE mp.user_id = ? AND m.status IN ('finished', 'cancelled')
+                ORDER BY COALESCE(m.finished_at, m.created_at) DESC
+                LIMIT ?
+            """
+        else:
+            query = """
+                SELECT m.*, mp.team, mp.kills, mp.deaths, mp.assists, mp.is_mvp, mp.rating_change
+                FROM matches m
+                JOIN match_players mp ON m.match_id = mp.match_id
+                WHERE mp.user_id = ? AND m.status = 'finished'
+                ORDER BY m.finished_at DESC
+                LIMIT ?
+            """
         async with db.execute(query, (user_id, limit)) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -1919,6 +1936,222 @@ async def revert_match_result(match_id: int) -> bool:
         
         await db.commit()
         return True
+
+
+async def cancel_finished_match(match_id: int) -> Dict[str, Any]:
+    """
+    Отменить завершённый матч с возвратом рейтинга всем участникам.
+    Матч помечается как 'cancelled' в базе данных.
+    
+    Returns:
+        Словарь с результатом:
+        - success: bool
+        - error: str (если есть ошибка)
+        - affected_players: List[int] (user_id затронутых игроков)
+        - rating_reverted: Dict[int, int] (user_id -> вернувшийся рейтинг)
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Проверяем что матч существует и завершён
+        async with db.execute(
+            "SELECT * FROM matches WHERE match_id = ?",
+            (match_id,)
+        ) as cursor:
+            match = await cursor.fetchone()
+            if not match:
+                return {'success': False, 'error': 'match_not_found'}
+            
+            if match['status'] == 'cancelled':
+                return {'success': False, 'error': 'already_cancelled'}
+            
+            if match['status'] != 'finished':
+                return {'success': False, 'error': 'match_not_finished'}
+        
+        # Получаем игроков матча с их изменениями статистики
+        async with db.execute(
+            "SELECT * FROM match_players WHERE match_id = ?",
+            (match_id,)
+        ) as cursor:
+            players = await cursor.fetchall()
+        
+        if not players:
+            return {'success': False, 'error': 'no_players_found'}
+        
+        winner_team = match['winner_team']
+        affected_players = []
+        rating_reverted = {}
+        
+        # Откатываем статистику каждого игрока
+        for player in players:
+            user_id = player['user_id']
+            team = player['team']
+            kills = player['kills'] or 0
+            deaths = player['deaths'] or 0
+            assists = player['assists'] or 0
+            is_mvp = player['is_mvp']
+            rating_change = player['rating_change'] or 0
+            
+            is_winner = team == winner_team
+            
+            # Откатываем статистику (вычитаем то что было добавлено)
+            await db.execute("""
+                UPDATE users SET 
+                    wins = wins - ?,
+                    losses = losses - ?,
+                    kills = MAX(0, kills - ?),
+                    deaths = MAX(0, deaths - ?),
+                    assists = MAX(0, assists - ?),
+                    rating = MAX(?, rating - ?),
+                    mvp_count = MAX(0, mvp_count - ?)
+                WHERE user_id = ?
+            """, (
+                1 if is_winner else 0,
+                0 if is_winner else 1,
+                kills,
+                deaths,
+                assists,
+                MIN_RATING,
+                rating_change,
+                1 if is_mvp else 0,
+                user_id
+            ))
+            
+            affected_players.append(user_id)
+            rating_reverted[user_id] = -rating_change  # Отрицательное изменение - это возврат
+        
+        # Помечаем матч как отменённый (сохраняем результаты для истории)
+        await db.execute("""
+            UPDATE matches SET 
+                status = 'cancelled'
+            WHERE match_id = ?
+        """, (match_id,))
+        
+        await db.commit()
+        
+        return {
+            'success': True,
+            'affected_players': affected_players,
+            'rating_reverted': rating_reverted
+        }
+
+
+async def get_user_finished_matches(user_id: int) -> List[Dict[str, Any]]:
+    """
+    Получить все завершённые (не отменённые) матчи пользователя.
+    Используется для отмены матчей при бане.
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT m.*, mp.team, mp.kills, mp.deaths, mp.assists, mp.is_mvp, mp.rating_change
+            FROM matches m
+            JOIN match_players mp ON m.match_id = mp.match_id
+            WHERE mp.user_id = ? AND m.status = 'finished'
+            ORDER BY m.finished_at DESC
+        """
+        async with db.execute(query, (user_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_all_banned_users() -> List[Dict[str, Any]]:
+    """Получить всех забаненных пользователей"""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM users WHERE is_banned = 1"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_user_matches_for_cancellation(user_id: int) -> List[Dict[str, Any]]:
+    """
+    Получить все матчи пользователя, которые можно/нужно отменить при бане:
+    - finished (откатываем рейтинг/статы)
+    - active/pending (просто помечаем cancelled, без рейтинга)
+
+    Возвращает список матчей (строки matches.* + status).
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        query = """
+            SELECT DISTINCT m.*
+            FROM matches m
+            JOIN match_players mp ON m.match_id = mp.match_id
+            WHERE mp.user_id = ?
+              AND m.status IN ('finished', 'active', 'pending')
+            ORDER BY COALESCE(m.finished_at, m.created_at) DESC
+        """
+        async with db.execute(query, (user_id,)) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def cancel_active_or_pending_match(match_id: int) -> Dict[str, Any]:
+    """
+    Отменить матч в статусе active/pending.
+    Рейтинг не трогаем (он ещё не применён), но матч должен отображаться как cancelled в истории.
+
+    Идемпотентно: если уже cancelled — вернёт already_cancelled.
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        async with db.execute("SELECT status FROM matches WHERE match_id = ?", (match_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return {"success": False, "error": "match_not_found"}
+            status = row["status"]
+
+        if status == "cancelled":
+            return {"success": False, "error": "already_cancelled"}
+
+        if status not in ("active", "pending"):
+            return {"success": False, "error": "match_not_active_or_pending", "status": status}
+
+        await db.execute("DELETE FROM match_ready_checks WHERE match_id = ?", (match_id,))
+        # игроков матча НЕ удаляем, иначе матч пропадёт из истории участников
+        await db.execute("UPDATE matches SET status = 'cancelled' WHERE match_id = ?", (match_id,))
+        await db.commit()
+
+        return {"success": True}
+
+
+async def cancel_all_user_matches(user_id: int) -> Dict[str, Any]:
+    """
+    Отменить все матчи пользователя (для бана):
+    - finished: через cancel_finished_match (возврат рейтинга/статистики)
+    - active/pending: через cancel_active_or_pending_match
+
+    Returns:
+        - cancelled_count: int
+        - match_ids: List[int]
+        - errors: List[str]
+    """
+    matches = await get_user_matches_for_cancellation(user_id)
+
+    cancelled_count = 0
+    cancelled_match_ids = []
+    errors = []
+
+    for match in matches:
+        match_id = match["match_id"]
+        status = match.get("status")
+
+        if status == "finished":
+            result = await cancel_finished_match(match_id)
+        else:
+            result = await cancel_active_or_pending_match(match_id)
+
+        if result.get("success"):
+            cancelled_count += 1
+            cancelled_match_ids.append(match_id)
+        elif result.get("error") != "already_cancelled":
+            errors.append(f"Match {match_id}: {result.get('error')}")
+
+    return {"cancelled_count": cancelled_count, "match_ids": cancelled_match_ids, "errors": errors}
 
 
 async def get_match_players_stats(match_id: int) -> List[Dict[str, Any]]:

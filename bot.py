@@ -17,7 +17,7 @@ from database import (
     init_db, create_user, get_user, join_lobby, get_lobby, 
     join_party, get_party, get_party_members, update_user_game_info, is_user_registered,
     is_registration_closed, ban_user, log_blocked_registration_attempt, 
-    get_all_admins_and_moderators
+    get_all_admins_and_moderators, get_all_banned_users, cancel_all_user_matches
 )
 from keyboards import get_main_menu_keyboard, get_party_invite_keyboard
 from utils import format_welcome_message, format_player_name, format_lobby_info, format_party_info
@@ -44,6 +44,49 @@ class RegistrationStates(StatesGroup):
     waiting_for_game_id = State()
 
 
+async def cancel_banned_users_matches():
+    """
+    Проверить всех забаненных игроков и отменить их матчи.
+    Вызывается при старте бота для обеспечения консистентности данных.
+    """
+    try:
+        banned_users = await get_all_banned_users()
+        
+        if not banned_users:
+            logger.info("Нет забаненных пользователей для проверки матчей")
+            return
+        
+        total_cancelled = 0
+        affected_users = []
+        
+        for user in banned_users:
+            user_id = user['user_id']
+            result = await cancel_all_user_matches(user_id)
+            
+            if result['cancelled_count'] > 0:
+                total_cancelled += result['cancelled_count']
+                affected_users.append({
+                    'user_id': user_id,
+                    'username': user.get('username'),
+                    'cancelled_count': result['cancelled_count'],
+                    'match_ids': result['match_ids']
+                })
+                logger.info(
+                    f"Отменено {result['cancelled_count']} матчей забаненного игрока "
+                    f"{user_id} (@{user.get('username', 'unknown')})"
+                )
+        
+        if total_cancelled > 0:
+            logger.info(
+                f"Всего отменено {total_cancelled} матчей у {len(affected_users)} забаненных игроков"
+            )
+        else:
+            logger.info("Матчей для отмены у забаненных игроков не найдено")
+            
+    except Exception as e:
+        logger.error(f"Ошибка при отмене матчей забаненных игроков: {e}")
+
+
 async def main():
     """Главная функция запуска бота"""
     
@@ -55,6 +98,9 @@ async def main():
     # Инициализируем базу данных
     await init_db()
     logger.info("База данных инициализирована")
+    
+    # Проверяем забаненных игроков и отменяем их матчи
+    await cancel_banned_users_matches()
     
     # Создаём бота и диспетчер
     bot = Bot(token=BOT_TOKEN)
